@@ -68,7 +68,7 @@ flowchart TB
     Browser -->|GET or POST /sso, /sso/passthru| Auth
     Auth -->|/Shibboleth.sso/Login| SP
     SP <--> IdP
-    SP -->|GET or POST /sso/callback[/:id]| Auth
+    SP -->|GET or POST /sso/callback/:id| Auth
     Client -->|discovery, GET /auth, POST /token, GET or POST /me, JWKS| Auth
     Browser -->|GET or POST /interaction/:uid| Auth
     Auth <--> MySQL
