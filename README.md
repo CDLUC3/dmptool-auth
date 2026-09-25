@@ -58,8 +58,8 @@ flowchart TB
     Auth[DMP Tool Auth Service]
     SP[Shibboleth SP]
     IdP[Institutional IdP]
-    MySQL[(MySQL)]
-    Valkey[(Valkey)]
+    MySQL[MySQL]
+    Valkey[Valkey]
 
     Browser -->|GET /healthz, GET /csrf, POST /csrf/verify| Auth
     Browser -->|POST /signup, /signin, /refresh-token, /signout| Auth
