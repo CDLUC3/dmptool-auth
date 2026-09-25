@@ -119,15 +119,6 @@ const requiredUrl = (name: string, fallback?: string): string => {
   return value.replace(/\/$/, '');
 };
 
-const tokenAudiences = (): string[] => {
-  const audiences = (process.env.TOKEN_AUDIENCE ?? 'http://localhost:4646')
-    .split(';')
-    .map((audience) => audience.trim())
-    .filter(Boolean);
-  if (audiences.length === 0) throw new Error('TOKEN_AUDIENCE must include at least one audience');
-  return audiences;
-};
-
 /**
  * Loads the configuration from environment variables.
  *
@@ -167,7 +158,9 @@ export const loadConfig = async (logger: Logger): Promise<Config> => {
 
   const cacheConfig: KeyvValkeyOptions = getCacheConfig();
   const issuer = requiredUrl('ISSUER', 'http://localhost:3000');
-  const validAudiences = tokenAudiences();
+  const audienceUI: string = process.env.AUDIENCE_UI || 'my-ui';
+  const audienceAPI: string = process.env.AUDIENCE_API || 'my-api';
+
   const cookieSecure = process.env.COOKIE_SECURE === 'true';
   if (process.env.NODE_ENV === 'production') {
     if (new URL(issuer).protocol !== 'https:') {
@@ -194,14 +187,15 @@ export const loadConfig = async (logger: Logger): Promise<Config> => {
     ses: sesConfig,
 
     issuer,
+    audienceUI,
+    audienceAPI,
     cookieSecure,
 
     tokens: {
       access: process.env.ACCESS_TOKEN_NAME ?? 'access_token',
       refresh: process.env.REFRESH_TOKEN_NAME ?? 'refresh_token',
       ssoPending: process.env.SSO_PENDING_TOKEN_NAME ?? 'sso_pending_token',
-      audience: validAudiences[0]!,
-      validAudiences,
+      validAudiences: [audienceUI, audienceAPI],
     },
 
     shibbolethProxySecret: process.env.SHIBBOLETH_PROXY_SECRET,

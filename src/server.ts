@@ -46,7 +46,6 @@ const app: Express = createApp({
   tokens: new TokenService(
     cache,
     keys,
-    config.tokens.audience,
     config.ttl.uiAccess,
     config.ttl.uiRefresh,
     config.ttl.passwordReset,

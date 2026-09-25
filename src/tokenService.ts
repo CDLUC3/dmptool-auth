@@ -22,7 +22,6 @@ export class TokenService {
   constructor(
     private readonly cache: CacheInterface,
     private readonly keyStore: KeyStore,
-    private readonly audience: string,
     private readonly accessTtlSeconds = 900,
     private readonly refreshTtlSeconds: number = 60 * 60 * 24 * 30,
     private readonly passwordResetTtlSeconds = 60 * 60 * 2,
@@ -33,10 +32,11 @@ export class TokenService {
    * The access token is signed using the KeyStore and has a short TTL, while the refresh token is stored in the
    * ValKey with a longer TTL.
    *
+   * @param audience The audience for the tokens.
    * @param user The user for whom to issue the tokens.
    * @returns A Promise that resolves to an object containing the access token, refresh token, and expiration time.
    */
-  async issue(user: PublicUser): Promise<AuthTokens> {
+  async issue(audience: string, user: PublicUser): Promise<AuthTokens> {
     const jti: string = randomUUID();
     const claims: TokenClaims = {
       id: user.id,
@@ -49,7 +49,7 @@ export class TokenService {
       jti,
       tokenVersion: user.tokenVersion,
     };
-    const accessToken: string = await this.keyStore.issueAccessToken(this.audience, claims, this.accessTtlSeconds);
+    const accessToken: string = await this.keyStore.issueAccessToken(audience, claims, this.accessTtlSeconds);
     const refreshToken: string = randomUUID();
     await this.cache.set(
       refreshKey(refreshToken),

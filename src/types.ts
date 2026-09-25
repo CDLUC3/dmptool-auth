@@ -18,12 +18,13 @@ export interface Config {
   doNotReplyAddress: string;
 
   issuer: string;
+  audienceUI: string;
+  audienceAPI: string;
 
   tokens: {
     access: string;
     refresh: string;
     ssoPending: string;
-    audience: string;
     validAudiences: string[];
   };
 

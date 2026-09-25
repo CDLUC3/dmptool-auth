@@ -1,6 +1,6 @@
 import { decodeJwt, jwtVerify } from 'jose';
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
-import type { Config } from '../types.js';
+import type {Config, PublicUser} from '../types.js';
 import { MockMySqlStore } from './mocks/mockMySql.js';
 import { MockValkeyCache } from './mocks/mockValkey.js';
 
@@ -35,11 +35,12 @@ const config: Config = {
   helpPageUrl: 'https://app.example.test/help',
   doNotReplyAddress: 'no-reply@example.test',
   issuer: 'https://auth.example.test',
+  audienceUI: 'https://app.example.test',
+  audienceAPI: 'https://api.example.test',
   tokens: {
     access: 'test_access',
     refresh: 'test_refresh',
     ssoPending: 'test_sso_pending',
-    audience: 'https://app.example.test',
     validAudiences: ['https://app.example.test', 'https://api.example.test'],
   },
   cache: {},
@@ -96,10 +97,11 @@ describe('TokenService', () => {
       languageId: 'en',
       role: 'RESEARCHER',
       acceptedTerms: true,
+      failed_login_attempts: 0
     });
     expect(user).toBeDefined();
-    const service = new TokenService(cache, keys, config.tokens.audience);
-    const tokens = await service.issue(user!);
+    const service = new TokenService(cache, keys, config.ttl.uiAccess, config.ttl.uiRefresh, config.ttl.passwordReset);
+    const tokens = await service.issue(config.tokens.validAudiences[0]!, user!);
     const claims = decodeJwt(tokens.accessToken);
 
     expect(claims).toMatchObject({
@@ -125,11 +127,76 @@ describe('TokenService', () => {
   it('uses the configured password reset TTL and lets expired reset tokens disappear naturally', async () => {
     const cache = new MockValkeyCache();
     const keys = await KeyStore.load(config);
-    const service = new TokenService(cache, keys, config.tokens.audience, 900, 60, 0);
+    const service = new TokenService(cache, keys, 900, 60, 0);
 
     const token = await service.issuePasswordResetToken('user-1');
 
     expect(cache.set).toHaveBeenCalledWith(`auth:password-reset:${token}`, 'user-1', 0);
+    await expect(service.passwordResetUserId(token)).resolves.toBeUndefined();
+  });
+
+  it('fails if the audience is not known', async () => {
+    const cache = new MockValkeyCache();
+    const keys = await KeyStore.load(config);
+    const service = new TokenService(cache, keys, 900, 60, 0);
+    const user = {
+      id: '1',
+      tokenVersion: 123,
+      email: 'alice@example.test',
+      password: 'Passw0rd!',
+      givenName: 'Alice',
+      surName: 'Example',
+      affiliationId: 'https://ror.org/example',
+      languageId: 'en',
+      role: 'RESEARCHER',
+      acceptedTerms: true,
+      failed_login_attempts: 0
+    } as PublicUser;
+    expect(user).toBeDefined();
+
+
+    await expect(service.issue('unknown-audience', user)).rejects.toThrow('Invalid audience for access token');
+  });
+
+  it('verifies active access tokens and rejects revoked or malformed ones', async () => {
+    const cache = new MockValkeyCache();
+    const keys = await KeyStore.load(config);
+    const service = new TokenService(cache, keys);
+    const user = {
+      id: '1',
+      tokenVersion: 123,
+      email: 'alice@example.test',
+      password: 'Passw0rd!',
+      givenName: 'Alice',
+      surName: 'Example',
+      affiliationId: 'https://ror.org/example',
+      languageId: 'en',
+      role: 'RESEARCHER',
+      acceptedTerms: true,
+      failed_login_attempts: 0
+    } as PublicUser;
+    const { accessToken } = await service.issue(config.tokens.validAudiences[0]!, user);
+
+    await expect(service.verifyAccessToken(accessToken)).resolves.toMatchObject({
+      id: user.id,
+      jti: expect.any(String),
+    });
+
+    const { jti } = decodeJwt(accessToken) as { jti: string };
+    await service.revoke(jti);
+
+    await expect(service.verifyAccessToken(accessToken)).resolves.toBeUndefined();
+    await expect(service.verifyAccessToken('not-a-token')).resolves.toBeUndefined();
+  });
+
+  it('returns and deletes active password reset tokens', async () => {
+    const cache = new MockValkeyCache();
+    const keys = await KeyStore.load(config);
+    const service = new TokenService(cache, keys, 900, 60, 60);
+    const token = await service.issuePasswordResetToken('user-1');
+
+    await expect(service.passwordResetUserId(token)).resolves.toBe('user-1');
+    await service.deletePasswordResetToken(token);
     await expect(service.passwordResetUserId(token)).resolves.toBeUndefined();
   });
 });

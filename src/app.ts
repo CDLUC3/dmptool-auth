@@ -248,7 +248,7 @@ export const createApp = (
         return;
       }
 
-      const issued: AuthTokens = await tokens.issue(user);
+      const issued: AuthTokens = await tokens.issue(config.audienceUI, user);
       writeTokens(response, issued, config);
       if (pendingSignupId) {
         await cache.del([`auth:sso-pending:${pendingSignupId}`]);
@@ -293,7 +293,7 @@ export const createApp = (
 
       // Issue new access and refresh tokens for the authenticated user
       config.logger.debug({ email }, 'Sign in - issuing tokens');
-      const issued: AuthTokens = await tokens.issue(user);
+      const issued: AuthTokens = await tokens.issue(config.audienceUI, user);
       writeTokens(response, issued, config);
       response.status(200).json({ success: true, message: 'ok' });
     } catch (error) {
@@ -331,7 +331,7 @@ export const createApp = (
       }
       // Revoke the old refresh token and issue a new one
       await tokens.revoke(record.jti);
-      const issued: AuthTokens = await tokens.issue(user);
+      const issued: AuthTokens = await tokens.issue(config.audienceUI, user);
 
       // Write the new access and refresh tokens to the response cookies
       config.logger.debug({ refreshToken, userId: record?.userId }, 'Refresh token - issuing new tokens');
@@ -555,7 +555,7 @@ export const createApp = (
       }
 
       config.logger.debug({ user }, 'SSO Callback - user authenticated');
-      const issued: AuthTokens = await tokens.issue(user);
+      const issued: AuthTokens = await tokens.issue(config.audienceUI, user);
       writeTokens(response, issued, config);
       response.status(302).location('/').send();
     } catch (error) {

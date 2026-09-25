@@ -24,7 +24,7 @@ const { TokenService } = await import('../tokenService.js');
 const { UserStore } = await import('../models/userStore.js');
 const shibbolethProxyHeaders = { 'x-shib-proxy-secret': 'test-shibboleth-secret' };
 const mockLogger = { debug: jest.fn(), error: jest.fn(), info: jest.fn(), warn: jest.fn() } as unknown as Logger;
-const sendMail = jest.fn<() => Promise<{ messageId: string }>>();
+const sendMail = jest.fn<(message: { html?: string }) => Promise<{ messageId: string }>>();
 const emailer = { sendMail } as unknown as Mail<SMTPSentMessageInfo>;
 
 const buildApp = async () => {
@@ -38,12 +38,13 @@ const buildApp = async () => {
     helpPageUrl: 'https://app.example.test/help',
     doNotReplyAddress: 'no-reply@example.test',
     issuer: 'http://auth.example.test',
+    audienceUI: 'my-ui',
+    audienceAPI: 'my-api',
     tokens: {
       access: 'test_access',
       refresh: 'test_refresh',
       ssoPending: 'test_sso_pending',
-      audience: 'https://app.example.test',
-      validAudiences: ['https://app.example.test'],
+      validAudiences: ['my-ui', 'my-api'],
     },
     cache: {},
     database: {
@@ -99,7 +100,6 @@ const buildApp = async () => {
       tokens: new TokenService(
         cache,
         keys,
-        config.tokens.audience,
         config.ttl.uiAccess,
         config.ttl.uiRefresh,
         config.ttl.passwordReset,
@@ -202,7 +202,7 @@ describe('authentication routes', () => {
       .send({ email: 'alice@example.test' })
       .expect(201);
     expect(issued.body).toEqual({ success: true, message: 'ok' });
-    const html = sendMail.mock.calls[0]?.[0].html;
+    const html = sendMail.mock.calls[0]?.[0]?.html ?? '';
     const token = new URL(html.match(/href="([^"]+)"/)?.[1] ?? '').searchParams.get('token');
     expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(cache.set).toHaveBeenCalledWith(`auth:password-reset:${token}`, '1', 123);
@@ -709,6 +709,7 @@ describe('authentication routes', () => {
       languageId: 'en-US',
       role: 'RESEARCHER',
       acceptedTerms: true,
+      failed_login_attempts: 0
     });
 
     const invalidClient = await request(app).get('/auth')

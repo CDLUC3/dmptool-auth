@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import type { Logger } from 'pino';
 
-const getSSMParameter = jest.fn<() => Promise<string | undefined>>();
+const getSSMParameter = jest.fn<(config: unknown, name: string) => Promise<string | undefined>>();
 jest.unstable_mockModule('@dmptool/utils', () => ({
   EnvironmentEnum: { DEV: 'DEV' },
   getSSMParameter,
@@ -49,8 +49,7 @@ describe('loadConfig', () => {
     expect(config.ttl.oidcInteraction).toBeGreaterThan(0);
     expect(config.ttl.passwordReset).toBe(123);
     expect(config.tokens).toMatchObject({
-      audience: 'https://app.example.test',
-      validAudiences: ['https://app.example.test', 'https://api.example.test'],
+      validAudiences: ['my-ui', 'my-api'],
     });
   });
 
@@ -74,8 +73,7 @@ describe('loadConfig', () => {
     });
     expect(config.ttl.passwordReset).toBe(7_200);
     expect(config.tokens).toMatchObject({
-      audience: 'http://localhost:4646',
-      validAudiences: ['http://localhost:4646'],
+      validAudiences: ['my-ui', 'my-api'],
     });
   });
 
@@ -92,8 +90,8 @@ describe('loadConfig', () => {
     await expect(loadConfig(logger)).rejects.toThrow('OIDC_CLIENTS_JSON must be valid JSON array');
 
     process.env.OIDC_CLIENTS_JSON = '[]';
-    process.env.TOKEN_AUDIENCE = ' ; ';
-    await expect(loadConfig(logger)).rejects.toThrow('TOKEN_AUDIENCE must include at least one audience');
+    process.env.AUDIENCE_UI = 'my-ui';
+    process.env.AUDIENCE_API = 'my-api';
 
     process.env.TOKEN_AUDIENCE = 'https://app.example.test';
     process.env.NODE_ENV = 'production';
