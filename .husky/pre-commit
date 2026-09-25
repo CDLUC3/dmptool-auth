@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -e  # Exit on error
+
+echo "Running ESLint scans..."
+npm run lint || {
+  echo "❌ ESLint failed. Please fix linting errors before committing."
+  exit 1
+}
+
+echo "Ensuring build compiles ..."
+npm run build || {
+  echo "❌ Build failed. Please fix compilation errors before committing."
+  exit 1
+}
+
+echo "Running Tests ..."
+npm run test || {
+  echo "❌ Tests failed. Please fix failing tests before committing."
+  exit 1
+}
+
+echo "Running Trivy scans..."
+
+# Check if Trivy is installed
+if ! command -v trivy &> /dev/null; then
+  echo "⚠️  Trivy is not installed. Skipping vulnerability scan."
+  echo "   To install Trivy, visit: https://aquasecurity.github.io/trivy/latest/getting-started/installation/"
+  echo "   Or run: brew install trivy (on macOS)"
+else
+  # Run Trivy to check for vulnerabilities in the filesystem
+  sh ./src/scripts/trivy-high.sh || {
+    echo "❌ Trivy found high/critical vulnerabilities. Commit aborted."
+    exit 1
+  }
+  echo "Trivy scans passed. Continuing with commit."
+fi
+
+echo "✅ All pre-commit checks passed!"

@@ -1,0 +1,41 @@
+networks:
+  dmptool-apollo-server_dmptool-network:
+    external: true
+
+services:
+  auth:
+    container_name: auth
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "4646:4646"
+    expose:
+      - 4646
+    networks:
+      - dmptool-apollo-server_dmptool-network
+    env_file:
+      - .env
+    environment:
+      - "AWS_ACCESS_KEY_ID=DUMMYIDEXAMPLE"
+      - "AWS_SECRET_ACCESS_KEY=DUMMYEXAMPLEKEY"
+      - "REGION=us-west-2"
+
+      - "ENV=dev"
+      - "NODE_ENV=development"
+      - "PORT=4646"
+      - "ISSUER=http://localhost:4646"
+
+      - "DB_HOST=apollo-mysql"
+      - "DB_PORT=3306"
+      - "DB_DATABASE=dmptool"
+
+      - "CACHE_HOST=apollo-redis"
+      - "CACHE_PORT=6379"
+      - "CACHE_CONNECT_TIMEOUT=10000"
+
+      # Using the Apollo server network's LocalStack endpoint
+      - "SSM_ENDPOINT=http://localstack:4566"
+    volumes:
+      - ".:/app"
+      - "/app/node_modules"
