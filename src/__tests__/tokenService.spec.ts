@@ -39,6 +39,8 @@ const config: Config = {
     access: 'test_access',
     refresh: 'test_refresh',
     ssoPending: 'test_sso_pending',
+    audience: 'https://app.example.test',
+    validAudiences: ['https://app.example.test', 'https://api.example.test'],
   },
   cache: {},
   database: {
@@ -96,7 +98,7 @@ describe('TokenService', () => {
       acceptedTerms: true,
     });
     expect(user).toBeDefined();
-    const service = new TokenService(cache, keys);
+    const service = new TokenService(cache, keys, config.tokens.audience);
     const tokens = await service.issue(user!);
     const claims = decodeJwt(tokens.accessToken);
 
@@ -110,6 +112,7 @@ describe('TokenService', () => {
       languageId: 'en',
       tokenVersion: 0,
       iss: 'https://auth.example.test',
+      aud: 'https://app.example.test',
     });
     expect((await jwtVerify(tokens.accessToken, await import('jose').then(({ importJWK }) => importJWK(keys.publicJwks().keys[0]!, 'RS256')))).protectedHeader.alg).toBe('RS256');
     await expect(service.consumeRefreshToken(tokens.refreshToken)).resolves.toMatchObject({ userId: user!.id });
@@ -122,7 +125,7 @@ describe('TokenService', () => {
   it('uses the configured password reset TTL and lets expired reset tokens disappear naturally', async () => {
     const cache = new MockValkeyCache();
     const keys = await KeyStore.load(config);
-    const service = new TokenService(cache, keys, 900, 60, 0);
+    const service = new TokenService(cache, keys, config.tokens.audience, 900, 60, 0);
 
     const token = await service.issuePasswordResetToken('user-1');
 

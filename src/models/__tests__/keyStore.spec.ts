@@ -7,6 +7,9 @@ const { KeyStore } = await import('../keyStore.js');
 
 const config = {
   issuer: 'https://auth.example.test',
+  tokens: {
+    validAudiences: ['https://app.example.test'],
+  },
   database: {},
   logger: { info: jest.fn() },
 };
@@ -65,7 +68,7 @@ describe('KeyStore', () => {
       .mockResolvedValueOnce({ results: [], fields: [] })
       .mockResolvedValueOnce({ results: { affectedRows: 1 }, fields: [] });
     const store = await KeyStore.load(config as never);
-    const token = await store.issueAccessToken({
+    const token = await store.issueAccessToken('https://app.example.test', {
       id: 'user-1',
       email: 'user@example.test',
       givenName: 'User',
@@ -77,10 +80,38 @@ describe('KeyStore', () => {
       tokenVersion: 0,
     }, 60);
 
-    expect(decodeJwt(token)).toMatchObject({ iss: config.issuer, sub: 'user-1', jti: 'jti-1' });
+    expect(decodeJwt(token)).toMatchObject({
+      iss: config.issuer,
+      sub: 'user-1',
+      jti: 'jti-1',
+      aud: 'https://app.example.test',
+    });
     const publicKey = await importJWK(store.publicJwks().keys[0]!, 'RS256');
     await expect(jwtVerify(token, publicKey)).resolves.toMatchObject({
       protectedHeader: { alg: 'RS256', kid: 'auth-service-rs256-1' },
     });
+    await expect(store.verifyAccessToken(token)).resolves.toMatchObject({
+      id: 'user-1',
+      jti: 'jti-1',
+    });
+  });
+
+  it('rejects access tokens for audiences outside the configured allowlist', async () => {
+    queryTable
+      .mockResolvedValueOnce({ results: [], fields: [] })
+      .mockResolvedValueOnce({ results: { affectedRows: 1 }, fields: [] });
+    const store = await KeyStore.load(config as never);
+
+    await expect(store.issueAccessToken('https://other.example.test', {
+      id: 'user-1',
+      email: 'user@example.test',
+      givenName: 'User',
+      surName: 'Example',
+      role: 'RESEARCHER',
+      affiliationId: 'affiliation-1',
+      languageId: 'en',
+      jti: 'jti-1',
+      tokenVersion: 0,
+    })).rejects.toThrow('Invalid audience for access token');
   });
 });

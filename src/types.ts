@@ -23,6 +23,8 @@ export interface Config {
     access: string;
     refresh: string;
     ssoPending: string;
+    audience: string;
+    validAudiences: string[];
   };
 
   cache: KeyvValkeyOptions;

@@ -33,6 +33,8 @@ const config: Config = {
     access: 'access',
     refresh: 'refresh',
     ssoPending: 'sso-pending',
+    audience: 'https://app.example.test',
+    validAudiences: ['https://app.example.test'],
   },
   cache: {},
   database: {

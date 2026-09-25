@@ -43,7 +43,14 @@ const app: Express = createApp({
   cache,
   emailer,
   users,
-  tokens: new TokenService(cache, keys, config.ttl.oidcAccess, config.ttl.oidcRefresh, config.ttl.passwordReset),
+  tokens: new TokenService(
+    cache,
+    keys,
+    config.tokens.audience,
+    config.ttl.uiAccess,
+    config.ttl.uiRefresh,
+    config.ttl.passwordReset,
+  ),
   provider
 });
 

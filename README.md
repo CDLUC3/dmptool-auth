@@ -161,6 +161,7 @@ The service reads all configuration from environment variables and AWS SSM Param
 | `NODE_ENV` | Production | `development` | Set to `production` for production behavior; production requires HTTPS issuer and secure cookies. |
 | `PORT` | No | `3000` | HTTP listen port. |
 | `ISSUER` | Production | `http://localhost:3000` | Public issuer URL, without a trailing slash. Must be HTTPS in production. |
+| `TOKEN_AUDIENCE` | No | `http://localhost:4646` | Semicolon-separated access-token audience allowlist. Browser tokens use the first value; all values are accepted when browser tokens are verified. |
 | `DEPLOYMENT_ENV` | Deployment-specific | `DEV` | `@dmptool/utils` environment used to locate `RdsUsername` and `RdsPassword` in SSM. |
 | `AWS_REGION` | No | `us-west-2` | AWS region used for Parameter Store. |
 | `SSM_ENDPOINT` | Local only | none | Parameter Store endpoint override, such as LocalStack. Its presence disables TLS for the SSM connection. |

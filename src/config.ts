@@ -31,8 +31,9 @@ const getSESConfig = async (
     ssmConfig: SsmConnectionParams,
     env: EnvironmentEnum = EnvironmentEnum.DEV
 ): Promise<SesConnectionParams | undefined> => {
-  const sesAccessKey: string | undefined = await getSSMParameter(ssmConfig, 'SesAccessKey', env);
-  const sesAccessSecret: string | undefined = await getSSMParameter(ssmConfig, 'SesAccessSecret', env);
+  const inDevMode: boolean = ['development', 'test'].includes(process.env.NODE_ENV || 'development');
+  const sesAccessKey: string | undefined = inDevMode ? 'DUMMY_KEY' : await getSSMParameter(ssmConfig, 'SesAccessKey', env);
+  const sesAccessSecret: string | undefined = inDevMode ? 'DUMMY_SECRET' : await getSSMParameter(ssmConfig, 'SesAccessSecret', env);
 
   if (!sesAccessKey) {
     ssmConfig.logger.fatal('Missing SesAccessKey in SSM Parameter Store!');
@@ -118,6 +119,15 @@ const requiredUrl = (name: string, fallback?: string): string => {
   return value.replace(/\/$/, '');
 };
 
+const tokenAudiences = (): string[] => {
+  const audiences = (process.env.TOKEN_AUDIENCE ?? 'http://localhost:4646')
+    .split(';')
+    .map((audience) => audience.trim())
+    .filter(Boolean);
+  if (audiences.length === 0) throw new Error('TOKEN_AUDIENCE must include at least one audience');
+  return audiences;
+};
+
 /**
  * Loads the configuration from environment variables.
  *
@@ -157,6 +167,7 @@ export const loadConfig = async (logger: Logger): Promise<Config> => {
 
   const cacheConfig: KeyvValkeyOptions = getCacheConfig();
   const issuer = requiredUrl('ISSUER', 'http://localhost:3000');
+  const validAudiences = tokenAudiences();
   const cookieSecure = process.env.COOKIE_SECURE === 'true';
   if (process.env.NODE_ENV === 'production') {
     if (new URL(issuer).protocol !== 'https:') {
@@ -189,6 +200,8 @@ export const loadConfig = async (logger: Logger): Promise<Config> => {
       access: process.env.ACCESS_TOKEN_NAME ?? 'access_token',
       refresh: process.env.REFRESH_TOKEN_NAME ?? 'refresh_token',
       ssoPending: process.env.SSO_PENDING_TOKEN_NAME ?? 'sso_pending_token',
+      audience: validAudiences[0]!,
+      validAudiences,
     },
 
     shibbolethProxySecret: process.env.SHIBBOLETH_PROXY_SECRET,

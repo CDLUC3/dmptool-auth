@@ -22,6 +22,7 @@ export class TokenService {
   constructor(
     private readonly cache: CacheInterface,
     private readonly keyStore: KeyStore,
+    private readonly audience: string,
     private readonly accessTtlSeconds = 900,
     private readonly refreshTtlSeconds: number = 60 * 60 * 24 * 30,
     private readonly passwordResetTtlSeconds = 60 * 60 * 2,
@@ -48,7 +49,7 @@ export class TokenService {
       jti,
       tokenVersion: user.tokenVersion,
     };
-    const accessToken: string = await this.keyStore.issueAccessToken(claims, this.accessTtlSeconds);
+    const accessToken: string = await this.keyStore.issueAccessToken(this.audience, claims, this.accessTtlSeconds);
     const refreshToken: string = randomUUID();
     await this.cache.set(
       refreshKey(refreshToken),

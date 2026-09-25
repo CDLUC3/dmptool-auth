@@ -15,6 +15,7 @@ export class KeyStore {
     private readonly issuer: string,
     private readonly signingKey: CryptoKey,
     readonly jwks: { keys: JWK[] },
+    private readonly validAudiences: string[],
   ) {}
 
   /**
@@ -41,7 +42,7 @@ export class KeyStore {
       if (imported instanceof Uint8Array) throw new Error('Stored signing key must be asymmetric');
       config.logger.info('Found existing signing key in database');
 
-      return new KeyStore(config.issuer, imported, { keys });
+      return new KeyStore(config.issuer, imported, { keys }, config.tokens.validAudiences);
     }
 
     // Otherwise, generate a new key pair and persist it.
@@ -59,7 +60,7 @@ export class KeyStore {
       [keyName, JSON.stringify(jwks)]
     );
 
-    return new KeyStore(config.issuer, privateKey, jwks);
+    return new KeyStore(config.issuer, privateKey, jwks, config.tokens.validAudiences);
   }
 
   /**
@@ -74,14 +75,22 @@ export class KeyStore {
   /**
    * Issue an access token with the given claims and expiration time.
    *
+   * @param audience the audience for the access token
    * @param claims the claims to include in the JWT payload
    * @param expiresInSeconds the expiration time in seconds (default: 900)
    * @returns a Promise that resolves to the signed JWT string
    */
-  async issueAccessToken(claims: TokenClaims, expiresInSeconds = 900): Promise<string> {
+  async issueAccessToken(audience: string, claims: TokenClaims, expiresInSeconds = 900): Promise<string> {
+    if (!audience) throw new Error('Audience is required to issue an access token');
+
+    // Make sure the specified audience is known to us
+    const validatedAudience: string | undefined = this.validAudiences.includes(audience) ? audience : undefined;
+    if (!validatedAudience) throw new Error('Invalid audience for access token');
+
     return new SignJWT({ ...claims })
       .setProtectedHeader({ alg: 'RS256', kid: 'auth-service-rs256-1', typ: 'JWT' })
       .setIssuer(this.issuer)
+      .setAudience(validatedAudience)
       .setSubject(claims.id)
       .setIssuedAt()
       .setExpirationTime(`${expiresInSeconds}s`)
@@ -98,6 +107,7 @@ export class KeyStore {
     const { payload } = await jwtVerify(token, verificationKey, {
       algorithms: ['RS256'],
       issuer: this.issuer,
+      audience: this.validAudiences,
     });
     if (
       typeof payload.id !== 'string'

@@ -38,6 +38,7 @@ describe('loadConfig', () => {
     process.env.CACHE_PORT = '6380';
     process.env.OIDC_CLIENTS_JSON = '[]';
     process.env.PASSWORD_RESET_TOKEN_TTL = '123';
+    process.env.TOKEN_AUDIENCE = 'https://app.example.test;https://api.example.test';
 
     const config = await loadConfig(logger);
 
@@ -47,6 +48,10 @@ describe('loadConfig', () => {
     expect(config.cache).toMatchObject({ uri: 'redis://valkey.example.test:6380', useRedisSets: true });
     expect(config.ttl.oidcInteraction).toBeGreaterThan(0);
     expect(config.ttl.passwordReset).toBe(123);
+    expect(config.tokens).toMatchObject({
+      audience: 'https://app.example.test',
+      validAudiences: ['https://app.example.test', 'https://api.example.test'],
+    });
   });
 
   it('uses local cache defaults when cache environment values are absent', async () => {
@@ -57,6 +62,7 @@ describe('loadConfig', () => {
     delete process.env.CACHE_DISCONNECT_TIMEOUT;
     delete process.env.CACHE_KEEP_ALIVE;
     delete process.env.PASSWORD_RESET_TOKEN_TTL;
+    delete process.env.TOKEN_AUDIENCE;
 
     const config = await loadConfig(logger);
 
@@ -67,6 +73,10 @@ describe('loadConfig', () => {
       keepAlive: 60_000,
     });
     expect(config.ttl.passwordReset).toBe(7_200);
+    expect(config.tokens).toMatchObject({
+      audience: 'http://localhost:4646',
+      validAudiences: ['http://localhost:4646'],
+    });
   });
 
   it('uses the local issuer fallback when ISSUER is not configured', async () => {
@@ -82,6 +92,10 @@ describe('loadConfig', () => {
     await expect(loadConfig(logger)).rejects.toThrow('OIDC_CLIENTS_JSON must be valid JSON array');
 
     process.env.OIDC_CLIENTS_JSON = '[]';
+    process.env.TOKEN_AUDIENCE = ' ; ';
+    await expect(loadConfig(logger)).rejects.toThrow('TOKEN_AUDIENCE must include at least one audience');
+
+    process.env.TOKEN_AUDIENCE = 'https://app.example.test';
     process.env.NODE_ENV = 'production';
     process.env.ISSUER = 'http://auth.example.test';
     await expect(loadConfig(logger)).rejects.toThrow('ISSUER must use HTTPS in production');
@@ -112,6 +126,7 @@ describe('loadConfig', () => {
   });
 
   it('rejects configuration when SES credentials cannot be loaded', async () => {
+    process.env.NODE_ENV = 'production';
     getSSMParameter.mockResolvedValue(undefined);
 
     await expect(loadConfig(logger)).rejects.toThrow('Failed to get SES configuration');
