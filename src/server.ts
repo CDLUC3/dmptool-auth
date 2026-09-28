@@ -50,6 +50,7 @@ const app: Express = createApp({
     config.ttl.uiRefresh,
     config.ttl.passwordReset,
   ),
+  keys,
   provider
 });
 

@@ -45,6 +45,7 @@ describe('UserStore', () => {
       languageId: ' en-US ',
       role: 'RESEARCHER',
       acceptedTerms: true,
+      failed_sign_in_attempts: 0,
     });
 
     expect(user).toMatchObject({ id: '42', email: 'alice@example.test', role: 'RESEARCHER' });
@@ -63,7 +64,7 @@ describe('UserStore', () => {
   ])('rejects %s before querying the database', async (_, input, message) => {
     const repository = new UserStore(config as never);
     await expect(repository.create({
-      givenName: 'User', surName: 'Example', affiliationId: '', languageId: 'en', role: 'RESEARCHER', ...input,
+      givenName: 'User', surName: 'Example', affiliationId: '', languageId: 'en', role: 'RESEARCHER', failed_sign_in_attempts: 0, ...input,
     })).rejects.toThrow(message);
     expect(queryTable).not.toHaveBeenCalled();
   });
@@ -80,6 +81,7 @@ describe('UserStore', () => {
     await expect(repository.create({
       email: 'user@example.test', password, givenName: 'User', surName: 'Example',
       affiliationId: '', languageId: 'en', role: 'RESEARCHER', acceptedTerms: true,
+      failed_sign_in_attempts: 0
     })).rejects.toThrow('Invalid password format');
   });
 
@@ -88,25 +90,25 @@ describe('UserStore', () => {
     jest.spyOn(repository, 'findByEmail').mockResolvedValueOnce({
       id: '1', email: 'user@example.test', passwordHash: 'hash', givenName: '', surName: '',
       role: 'RESEARCHER', affiliationId: '', languageId: 'en', tokenVersion: 0, acceptedTerms: true,
-      failed_login_attempts: 0,
+      failed_sign_in_attempts: 0,
     });
     await expect(repository.create({
       email: 'user@example.test', password: 'Passw0rd!', givenName: 'User', surName: 'Example',
-      affiliationId: '', languageId: 'en', role: 'RESEARCHER', acceptedTerms: true,
+      affiliationId: '', languageId: 'en', role: 'RESEARCHER', acceptedTerms: true, failed_sign_in_attempts: 0
     })).rejects.toThrow('A user with this email already exists');
 
     jest.spyOn(repository, 'findByEmail').mockResolvedValueOnce(undefined);
     queryTable.mockResolvedValueOnce({ results: { affectedRows: 0 }, fields: [] });
     await expect(repository.create({
       email: 'user@example.test', password: 'Passw0rd!', givenName: 'User', surName: 'Example',
-      affiliationId: '', languageId: 'en', role: 'RESEARCHER', acceptedTerms: true,
+      affiliationId: '', languageId: 'en', role: 'RESEARCHER', acceptedTerms: true, failed_sign_in_attempts: 0
     })).resolves.toBeUndefined();
 
     jest.spyOn(repository, 'findByEmail').mockResolvedValueOnce(undefined);
     queryTable.mockResolvedValueOnce({ results: { affectedRows: 1, insertId: 0 }, fields: [] });
     await expect(repository.create({
       email: 'user@example.test', password: 'Passw0rd!', givenName: '', surName: '',
-      affiliationId: '', languageId: '', role: 'RESEARCHER', acceptedTerms: true,
+      affiliationId: '', languageId: '', role: 'RESEARCHER', acceptedTerms: true, failed_sign_in_attempts: 0
     })).resolves.toBeUndefined();
     expect(config.logger.error).toHaveBeenCalled();
   });
@@ -116,7 +118,7 @@ describe('UserStore', () => {
     jest.spyOn(repository, 'findByEmail').mockResolvedValue(undefined);
     jest.spyOn(repository, 'findById').mockResolvedValue({
       id: '7', email: 'alice@example.test', givenName: '', surName: '', role: 'RESEARCHER',
-      affiliationId: '', languageId: 'en-US', tokenVersion: 0, acceptedTerms: true, failed_login_attempts: 0,
+      affiliationId: '', languageId: 'en-US', tokenVersion: 0, acceptedTerms: true, failed_sign_in_attempts: 0,
     });
     queryTable
       .mockResolvedValueOnce({ results: { affectedRows: 1, insertId: 7 }, fields: [] })
@@ -136,7 +138,7 @@ describe('UserStore', () => {
   const row = {
     id: 1, email: 'user@example.test', password: 'hash', role: 'RESEARCHER',
     givenName: 'User', surName: 'Example', affiliationId: 'org', languageId: 'en', ssoId: 'sso-1',
-    failed_login_attempts: 0,
+    failed_sign_in_attempts: 0,
   };
 
   it('maps valid raw rows for all public lookup methods', async () => {
@@ -171,7 +173,7 @@ describe('UserStore', () => {
     [{ ...row, affiliationId: 3 }],
     [{ ...row, languageId: 3 }],
     [{ ...row, ssoId: 3 }],
-    [{ ...row, failed_login_attempts: '3' }],
+    [{ ...row, failed_sign_in_attempts: '3' }],
     [[]],
   ])('returns undefined for malformed raw rows', async (rows) => {
     const repository = new UserStore(config as never);
@@ -185,7 +187,7 @@ describe('UserStore', () => {
     const user = {
       id: '1', email: row.email, passwordHash: await bcrypt.hash(pepperPassword('Passw0rd!'), 4), givenName: 'User',
       surName: 'Example', role: 'RESEARCHER', affiliationId: 'org', languageId: 'en',
-      tokenVersion: 0, acceptedTerms: true, failed_login_attempts: 0,
+      tokenVersion: 0, acceptedTerms: true, failed_sign_in_attempts: 0,
     };
     await expect(repository.authenticate('bad-email', 'Passw0rd!')).resolves.toBeUndefined();
     await expect(repository.authenticate(row.email, 'password')).resolves.toBeUndefined();
@@ -196,7 +198,7 @@ describe('UserStore', () => {
     await expect(repository.authenticate(row.email, 'Passw0rd!')).resolves.toEqual(user);
     expect(queryTable).toHaveBeenLastCalledWith(
       expect.anything(),
-      expect.stringContaining('failed_login_attempts = 0'),
+      expect.stringContaining('failed_sign_in_attempts = 0'),
       ['PASSWORD', user.id],
     );
   });
@@ -206,7 +208,7 @@ describe('UserStore', () => {
     const user = {
       id: '1', email: row.email, passwordHash: await bcrypt.hash(pepperPassword('Passw0rd!'), 4), givenName: 'User',
       surName: 'Example', role: 'RESEARCHER', affiliationId: 'org', languageId: 'en',
-      tokenVersion: 0, acceptedTerms: true, failed_login_attempts: 0,
+      tokenVersion: 0, acceptedTerms: true, failed_sign_in_attempts: 0,
     };
     jest.spyOn(repository, 'findByEmail').mockResolvedValueOnce(user);
     queryTable.mockResolvedValueOnce({ results: { affectedRows: 1 }, fields: [] });
@@ -214,18 +216,18 @@ describe('UserStore', () => {
     await expect(repository.authenticate(row.email, 'Wrongpass1!')).resolves.toBeUndefined();
     expect(queryTable).toHaveBeenCalledWith(
       expect.anything(),
-      expect.stringContaining('failed_login_attempts = failed_login_attempts + 1'),
+      expect.stringContaining('failed_sign_in_attempts = failed_sign_in_attempts + 1'),
       [user.id],
     );
 
-    jest.spyOn(repository, 'findByEmail').mockResolvedValueOnce({ ...user, failed_login_attempts: 4 });
+    jest.spyOn(repository, 'findByEmail').mockResolvedValueOnce({ ...user, failed_sign_in_attempts: 4 });
     queryTable
       .mockResolvedValueOnce({ results: { affectedRows: 1 }, fields: [] })
       .mockResolvedValueOnce({ results: { affectedRows: 1 }, fields: [] });
 
     await expect(repository.authenticate(row.email, 'Wrongpass1!')).resolves.toBeUndefined();
     expect(queryTable.mock.calls.slice(-2)).toEqual([
-      [expect.anything(), expect.stringContaining('failed_login_attempts = failed_login_attempts + 1'), [user.id]],
+      [expect.anything(), expect.stringContaining('failed_sign_in_attempts = failed_sign_in_attempts + 1'), [user.id]],
       [expect.anything(), expect.stringContaining('SET locked = 1'), [user.id]],
     ]);
   });
@@ -235,7 +237,7 @@ describe('UserStore', () => {
     const user = {
       id: '1', email: row.email, passwordHash: 'hash', givenName: 'User', surName: 'Example',
       role: 'RESEARCHER', affiliationId: 'org', languageId: 'en', tokenVersion: 0,
-      acceptedTerms: true, failed_login_attempts: 3,
+      acceptedTerms: true, failed_sign_in_attempts: 3,
     };
     jest.spyOn(repository, 'findBySsoId').mockResolvedValueOnce(undefined);
     await expect(repository.ssoLogin('missing')).resolves.toBeUndefined();
@@ -244,7 +246,7 @@ describe('UserStore', () => {
     await expect(repository.ssoLogin('sso-1')).resolves.toMatchObject({ id: '1' });
     expect(queryTable).toHaveBeenLastCalledWith(
       expect.anything(),
-      expect.stringContaining('failed_login_attempts = 0'),
+      expect.stringContaining('failed_sign_in_attempts = 0'),
       ['SSO', user.id],
     );
   });

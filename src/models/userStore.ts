@@ -33,7 +33,7 @@ const publicUser = (user: User): PublicUser => ({
   tokenVersion: user.tokenVersion,
   ssoId: user.ssoId,
   acceptedTerms: user.acceptedTerms,
-  failed_login_attempts: user.failed_login_attempts,
+  failed_sign_in_attempts: user.failed_sign_in_attempts,
 });
 
 /**
@@ -51,10 +51,10 @@ const toUser = (row: UserRow): User => ({
   role: row.role,
   affiliationId: row.affiliationId ?? '',
   languageId: row.languageId ?? 'en',
-  tokenVersion: 0,
+  tokenVersion: row.tokenVersion ?? 0,
   ssoId: row.ssoId ?? undefined,
   acceptedTerms: true,
-  failed_login_attempts: row.failed_login_attempts ?? 0,
+  failed_sign_in_attempts: row.failed_sign_in_attempts ?? 0,
 });
 
 /**
@@ -245,12 +245,12 @@ export class UserStore {
       if (user) {
         await queryTable(
             { ...this.config.database, logger: this.config.logger },
-            `UPDATE ${usersTable} SET failed_login_attempts = failed_login_attempts + 1 WHERE id = ?`,
+            `UPDATE ${usersTable} SET failed_sign_in_attempts = failed_sign_in_attempts + 1 WHERE id = ?`,
             [user.id],
         );
 
         // If it has reached 5, lock the account.
-        const newAttempts = (user.failed_login_attempts || 0) + 1;
+        const newAttempts = (user.failed_sign_in_attempts || 0) + 1;
         if (newAttempts >= 5) {
           await queryTable(
               { ...this.config.database, logger: this.config.logger },
@@ -265,14 +265,15 @@ export class UserStore {
     // Update the last sign-in timestamp and method for the user
     await queryTable(
         { ...this.config.database, logger: this.config.logger },
-        `UPDATE ${usersTable} SET failed_login_attempts = 0, last_sign_in = CURRENT_TIMESTAMP, last_sign_in_via = ? WHERE id = ?`,
+        `UPDATE ${usersTable} SET failed_sign_in_attempts = 0, last_sign_in = CURRENT_TIMESTAMP, last_sign_in_via = ? WHERE id = ?`,
         ['PASSWORD', user.id],
     );
     return user;
   }
 
   /**
-   * Replace a user's password using the same validation and bcrypt settings as account creation.
+   * Replace a user's password using the same validation and bcrypt settings as account creation. This also increments
+   * the token version for the user, which invalidates any existing refresh tokens.
    *
    * @param id The ID of the user whose password is to be reset.
    * @param password The new password to set for the user.
@@ -284,7 +285,7 @@ export class UserStore {
     const passwordHash: string = await this.hashPassword(password);
     const response: dbQueryResponse = await queryTable(
         { ...this.config.database, logger: this.config.logger },
-        `UPDATE ${usersTable} SET password = ? WHERE id = ? AND active = 1 AND locked = 0`,
+        `UPDATE ${usersTable} SET password = ?, tokenVersion = tokenVersion + 1 WHERE id = ? AND active = 1 AND locked = 0`,
         [passwordHash, id],
     );
     return Boolean(response.results && !Array.isArray(response.results)
@@ -304,7 +305,7 @@ export class UserStore {
 
     const pepperedPassword: string = this.getPepperedPassword(currentPassword);
     const user: User | undefined = await this.findRaw(
-        `SELECT u.id, u.password, u.role, u.givenName, u.surName, u.affiliationId, u.languageId, u.ssoId, ue.email, u.failedLoginAttempts
+        `SELECT u.id, u.password, u.role, u.givenName, u.surName, u.affiliationId, u.languageId, u.ssoId, u.tokenVersion, ue.email, u.failedLoginAttempts
        FROM ${usersTable} u JOIN ${userEmailsTable} ue ON ue.userId = u.id AND ue.isPrimary = 1
        WHERE u.id = ? AND u.active = 1 AND u.locked = 0 LIMIT 1`,
         [id],
@@ -327,7 +328,7 @@ export class UserStore {
     // Update the last sign-in timestamp and method for the user
     await queryTable(
         { ...this.config.database, logger: this.config.logger },
-        `UPDATE ${usersTable} SET failed_login_attempts = 0, last_sign_in = CURRENT_TIMESTAMP, last_sign_in_via = ? WHERE id = ?`,
+        `UPDATE ${usersTable} SET failed_sign_in_attempts = 0, last_sign_in = CURRENT_TIMESTAMP, last_sign_in_via = ? WHERE id = ?`,
         ['SSO', user.id],
     );
     return user;
@@ -341,7 +342,7 @@ export class UserStore {
    */
   async findById(id: string): Promise<PublicUser | undefined> {
     const user: User | undefined = await this.findRaw(
-      `SELECT u.id, u.password, u.role, u.givenName, u.surName, u.affiliationId, u.languageId, u.ssoId, ue.email, u.failed_login_attempts
+      `SELECT u.id, u.password, u.role, u.givenName, u.surName, u.affiliationId, u.languageId, u.ssoId, u.tokenVersion, ue.email, u.failed_sign_in_attempts
        FROM ${usersTable} u JOIN ${userEmailsTable} ue ON ue.userId = u.id AND ue.isPrimary = 1
        WHERE u.id = ? AND u.active = 1 AND u.locked = 0 LIMIT 1`,
       [id],
@@ -357,7 +358,7 @@ export class UserStore {
    */
   async findByEmail(email: string): Promise<User | undefined> {
     return this.findRaw(
-      `SELECT u.id, u.password, u.role, u.givenName, u.surName, u.affiliationId, u.languageId, u.ssoId, ue.email, u.failed_login_attempts
+      `SELECT u.id, u.password, u.role, u.givenName, u.surName, u.affiliationId, u.languageId, u.ssoId, u.tokenVersion, ue.email, u.failed_sign_in_attempts
        FROM ${usersTable} u JOIN ${userEmailsTable} ue ON ue.userId = u.id
        WHERE LOWER(ue.email) = ? AND (ue.isPrimary = 1 OR ue.isConfirmed = 1)
          AND u.active = 1 AND u.locked = 0 LIMIT 1`,
@@ -373,7 +374,7 @@ export class UserStore {
    */
   async findBySsoId(ssoId: string): Promise<PublicUser | undefined> {
     const user: User | undefined = await this.findRaw(
-      `SELECT u.id, u.password, u.role, u.givenName, u.surName, u.affiliationId, u.languageId, u.ssoId, ue.email, u.failed_login_attempts
+      `SELECT u.id, u.password, u.role, u.givenName, u.surName, u.affiliationId, u.languageId, u.ssoId, u.tokenVersion, ue.email, u.failed_sign_in_attempts
        FROM ${usersTable} u JOIN ${userEmailsTable} ue ON ue.userId = u.id AND ue.isPrimary = 1 
        WHERE u.ssoId = ? AND u.active = 1 AND u.locked = 0 LIMIT 1`,
       [ssoId],

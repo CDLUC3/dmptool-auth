@@ -45,6 +45,7 @@ const buildApp = async () => {
       refresh: 'test_refresh',
       ssoPending: 'test_sso_pending',
       validAudiences: ['my-ui', 'my-api'],
+      keyRotationSeconds: 60 * 60 * 24 * 30,
     },
     cache: {},
     database: {
@@ -104,6 +105,7 @@ const buildApp = async () => {
         config.ttl.uiRefresh,
         config.ttl.passwordReset,
       ),
+      keys,
     }),
     cache,
     users,
@@ -240,6 +242,11 @@ describe('authentication routes', () => {
       password: 'NewPassw0rd!',
       passwordConfirmation: 'NewPassw0rd!',
     }).expect(200, { success: true, message: 'ok' });
+    expect(queryTable).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.stringContaining('tokenVersion = tokenVersion + 1'),
+      [expect.any(String), '1'],
+    );
     await expect(cache.get(`auth:password-reset:${token}`)).resolves.toBeUndefined();
 
     await request(app).post('/password-reset/verify')
@@ -494,6 +501,14 @@ describe('authentication routes', () => {
     const agent = request.agent(app);
 
     await request(app).get('/jwks.json').expect(302).expect('Location', '/.well-known/jwks.json');
+    await request(app).get('/.well-known/jwks')
+      .expect('Content-Type', /application\/jwk-set\+json/)
+      .expect(200)
+      .expect((response) => {
+        expect(response.body).toEqual(expect.objectContaining({
+          keys: [expect.objectContaining({ kid: expect.any(String) })],
+        }));
+      });
 
     const csrf = await agent.get('/csrf').expect(200);
     await agent.post('/signout')
@@ -709,7 +724,7 @@ describe('authentication routes', () => {
       languageId: 'en-US',
       role: 'RESEARCHER',
       acceptedTerms: true,
-      failed_login_attempts: 0
+      failed_sign_in_attempts: 0
     });
 
     const invalidClient = await request(app).get('/auth')

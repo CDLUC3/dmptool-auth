@@ -1,4 +1,4 @@
-import { decodeJwt, importJWK, jwtVerify } from 'jose';
+import { decodeJwt, decodeProtectedHeader, importJWK, jwtVerify } from 'jose';
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 
 const queryTable = jest.fn<(config: unknown, sql: string, values?: unknown[]) => Promise<unknown>>();
@@ -9,9 +9,14 @@ const config = {
   issuer: 'https://auth.example.test',
   tokens: {
     validAudiences: ['https://app.example.test'],
+    keyRotationSeconds: 60 * 60 * 24 * 30,
   },
   database: {},
   logger: { info: jest.fn() },
+  ttl: {
+    uiAccess: 900,
+    oidcAccess: 900,
+  },
 };
 
 beforeEach(() => {
@@ -88,12 +93,63 @@ describe('KeyStore', () => {
     });
     const publicKey = await importJWK(store.publicJwks().keys[0]!, 'RS256');
     await expect(jwtVerify(token, publicKey)).resolves.toMatchObject({
-      protectedHeader: { alg: 'RS256', kid: 'auth-service-rs256-1' },
+      protectedHeader: { alg: 'RS256', kid: expect.stringMatching(/^auth-service-rs256-/) },
     });
+
     await expect(store.verifyAccessToken(token)).resolves.toMatchObject({
       id: 'user-1',
       jti: 'jti-1',
     });
+  });
+
+  it('rotates the active key and retains its public key until access tokens can no longer be valid', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+    const rotatingConfig = {
+      ...config,
+      tokens: { ...config.tokens, keyRotationSeconds: 60 },
+      ttl: { uiAccess: 120, oidcAccess: 120 },
+    };
+    queryTable
+      .mockResolvedValueOnce({ results: [], fields: [] })
+      .mockResolvedValueOnce({ results: { affectedRows: 1 }, fields: [] });
+    const first = await KeyStore.load(rotatingConfig as never);
+    const originalToken = await first.issueAccessToken('https://app.example.test', {
+      id: 'user-1',
+      email: 'user@example.test',
+      givenName: 'User',
+      surName: 'Example',
+      role: 'RESEARCHER',
+      affiliationId: 'affiliation-1',
+      languageId: 'en',
+      jti: 'jti-1',
+      tokenVersion: 0,
+    }, 120);
+    const persisted = JSON.parse(queryTable.mock.calls[1]![2]![1] as string);
+
+    jest.setSystemTime(new Date('2026-01-01T00:01:00.000Z'));
+    queryTable
+      .mockResolvedValueOnce({ results: [{ jwks: persisted }], fields: [] })
+      .mockResolvedValueOnce({ results: { affectedRows: 1 }, fields: [] });
+    const rotated = await KeyStore.load(rotatingConfig as never);
+
+    expect(rotated.publicJwks().keys).toHaveLength(2);
+    expect(decodeProtectedHeader(await rotated.issueAccessToken('https://app.example.test', {
+      id: 'user-1',
+      email: 'user@example.test',
+      givenName: 'User',
+      surName: 'Example',
+      role: 'RESEARCHER',
+      affiliationId: 'affiliation-1',
+      languageId: 'en',
+      jti: 'jti-2',
+      tokenVersion: 0,
+    })).kid).not.toBe(decodeProtectedHeader(originalToken).kid);
+    await expect(rotated.verifyAccessToken(originalToken)).resolves.toMatchObject({ id: 'user-1' });
+
+    const updated = JSON.parse(queryTable.mock.calls[3]![2]![0] as string);
+    expect(updated.retired[0].expiresAt).toBe('2026-01-01T00:04:00.000Z');
+    jest.useRealTimers();
   });
 
   it('rejects access tokens for audiences outside the configured allowlist', async () => {

@@ -42,6 +42,7 @@ const config: Config = {
     refresh: 'test_refresh',
     ssoPending: 'test_sso_pending',
     validAudiences: ['https://app.example.test', 'https://api.example.test'],
+    keyRotationSeconds: 60 * 60 * 24 * 30,
   },
   cache: {},
   database: {
@@ -97,7 +98,7 @@ describe('TokenService', () => {
       languageId: 'en',
       role: 'RESEARCHER',
       acceptedTerms: true,
-      failed_login_attempts: 0
+      failed_sign_in_attempts: 0
     });
     expect(user).toBeDefined();
     const service = new TokenService(cache, keys, config.ttl.uiAccess, config.ttl.uiRefresh, config.ttl.passwordReset);
@@ -150,7 +151,7 @@ describe('TokenService', () => {
       languageId: 'en',
       role: 'RESEARCHER',
       acceptedTerms: true,
-      failed_login_attempts: 0
+      failed_sign_in_attempts: 0
     } as PublicUser;
     expect(user).toBeDefined();
 
@@ -173,7 +174,7 @@ describe('TokenService', () => {
       languageId: 'en',
       role: 'RESEARCHER',
       acceptedTerms: true,
-      failed_login_attempts: 0
+      failed_sign_in_attempts: 0
     } as PublicUser;
     const { accessToken } = await service.issue(config.tokens.validAudiences[0]!, user);
 

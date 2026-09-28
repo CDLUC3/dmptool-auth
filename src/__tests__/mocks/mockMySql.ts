@@ -114,6 +114,7 @@ export class MockMySqlStore {
       const user = this.users.get(Number(values[1]));
       if (!user || !user.active || user.locked) return result(0);
       user.password = String(values[0]);
+      user.tokenVersion += 1;
       return result(1);
     }
     if (sql.startsWith('UPDATE users ') || sql.startsWith('UPDATE template_collaborators ') || sql.startsWith('UPDATE project_collaborators ')) {

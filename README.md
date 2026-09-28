@@ -180,6 +180,7 @@ The service reads all configuration from environment variables and AWS SSM Param
 | `ACCESS_TOKEN_NAME` | No | `access_token` | Access-token cookie name. |
 | `REFRESH_TOKEN_NAME` | No | `refresh_token` | Refresh-token cookie name. |
 | `SSO_PENDING_TOKEN_NAME` | No | `sso_pending_token` | Short-lived SSO signup-handoff cookie name. |
+| `SIGNING_KEY_ROTATION_INTERVAL` | No | `2592000` | Seconds between signing-key rotations, evaluated at service startup. Retired public keys remain in the JWKS for the longest access-token lifetime plus 60 seconds. |
 | `PEPPER_SECRET` | **Yes in production** | `default-pepper-secret` | Password-hash pepper. Set a unique secret outside local development. |
 | `BCRYPT_SALT_ROUNDS` | No | `10` | BCrypt work factor for passwords. |
 | `CSRF_TTL` | No | `3600` | CSRF token lifetime. |

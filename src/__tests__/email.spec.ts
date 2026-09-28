@@ -35,6 +35,7 @@ const config: Config = {
     ssoPending: 'sso-pending',
     audience: 'https://app.example.test',
     validAudiences: ['https://app.example.test'],
+    keyRotationSeconds: 60 * 60 * 24 * 30,
   },
   cache: {},
   database: {

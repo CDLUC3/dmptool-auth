@@ -196,6 +196,7 @@ export const loadConfig = async (logger: Logger): Promise<Config> => {
       refresh: process.env.REFRESH_TOKEN_NAME ?? 'refresh_token',
       ssoPending: process.env.SSO_PENDING_TOKEN_NAME ?? 'sso_pending_token',
       validAudiences: [audienceUI, audienceAPI],
+      keyRotationSeconds: Number.parseInt(process.env.SIGNING_KEY_ROTATION_INTERVAL ?? '2592000', 10),
     },
 
     shibbolethProxySecret: process.env.SHIBBOLETH_PROXY_SECRET,

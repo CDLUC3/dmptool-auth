@@ -50,6 +50,7 @@ describe('loadConfig', () => {
     expect(config.ttl.passwordReset).toBe(123);
     expect(config.tokens).toMatchObject({
       validAudiences: ['my-ui', 'my-api'],
+      keyRotationSeconds: 60 * 60 * 24 * 30,
     });
   });
 

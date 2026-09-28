@@ -26,6 +26,7 @@ export interface Config {
     refresh: string;
     ssoPending: string;
     validAudiences: string[];
+    keyRotationSeconds: number;
   };
 
   cache: KeyvValkeyOptions;
@@ -73,14 +74,31 @@ export interface dbQueryResponse {
   fields: unknown[]
 }
 
+// A row from the authKeys table in the database. The jwks field contains a JSON string or object representing
 export interface KeyRow {
-  jwks: { keys: JWK[] };
+  jwks: StoredKeySet | string;
 }
 
+// A retired signing key is a public key that was previously used to sign JWTs, but has been replaced by a new key.
+// Retired keys are retained for a period of time to allow verification of in-flight tokens.
+export interface RetiredSigningKey {
+  expiresAt: string;
+  key: JWK;
+}
+
+// A stored key set is a collection of signing keys, including the current active key and any retired keys.
+export interface StoredKeySet {
+  keys: JWK[];
+  createdAt?: string;
+  retired?: RetiredSigningKey[];
+}
+
+// A row from the oidc table in the database. The payload field contains a JSON object representing the OIDC session data.
 export interface OidcRow {
   payload: AdapterPayload;
 }
 
+// A row from the users table in the database. The fields are in camelCase to match the database schema.
 export interface UserRow extends Record<string, unknown> {
   id: number | string;
   email: string;
@@ -91,9 +109,11 @@ export interface UserRow extends Record<string, unknown> {
   affiliationId: string | null;
   languageId: string | null;
   ssoId: string | null;
-  failed_login_attempts: number | null;
+  tokenVersion: number | null;
+  failed_sign_in_attempts: number | null;
 }
 
+// A user object used in the application. The fields are in camelCase to match the database schema.
 export interface User {
   id: string;
   email: string;
@@ -106,9 +126,10 @@ export interface User {
   tokenVersion: number;
   ssoId?: string;
   acceptedTerms: boolean;
-  failed_login_attempts: number;
+  failed_sign_in_attempts: number;
 }
 
+// A public user object that omits the passwordHash field. This is used when returning user data to clients.
 export type PublicUser = Omit<User, 'passwordHash'>;
 
 // Our DB schema uses CamelCase for column names, but oidc-provider expects snake_case.
@@ -126,6 +147,7 @@ export interface OAuthClientRow {
   redirectUris: string;
 }
 
+// An OAuth client object used in the application. The fields are in snake_case to match the oidc-provider expectations.
 export interface OAuthClient {
   client_id: string;
   client_secret: string | null;
@@ -139,12 +161,15 @@ export interface OAuthClient {
   redirect_uris: string[];
 }
 
+// The data stored in the cache for a refresh token. This includes the user ID, the JWT ID (jti) of the access token,
+// and the token version.
 export interface RefreshTokenData {
   userId: string;
   jti: string;
   tokenVersion: number;
 }
 
+// The data stored in the cache for a password reset token. This includes the user ID and the JWT ID (jti) of the access token.
 export interface TokenClaims {
   id: string;
   email: string;
@@ -157,6 +182,7 @@ export interface TokenClaims {
   tokenVersion: number;
 }
 
+// The data stored in the cache for a password reset token. This includes the user ID and the JWT ID (jti) of the access token.
 export interface ShibbolethAssertion {
   uid?: string;
   email?: string;

@@ -5,10 +5,11 @@ import express, { type Express, type NextFunction, type Request, type Response }
 import type { Grant, Interaction, Provider, UnknownObject } from 'oidc-provider';
 import type { CacheInterface } from './cache.js';
 import type { AuthTokens, TokenService } from './tokenService.js';
-import type {Config, PublicUser, RefreshTokenData, ShibbolethAssertion} from './types.js';
+import type { Config, PublicUser, RefreshTokenData, ShibbolethAssertion } from './types.js';
 import type { UserStore } from './models/userStore.js';
+import type { KeyStore } from './models/keyStore.js';
 import type { Mail, SMTPSentMessageInfo } from "nodemailer";
-import {sendResetPasswordEmail} from "./email.js";
+import { sendResetPasswordEmail } from "./email.js";
 
 interface Dependencies {
   config: Config;
@@ -16,6 +17,7 @@ interface Dependencies {
   emailer: Mail<SMTPSentMessageInfo>
   users: UserStore;
   tokens: TokenService;
+  keys: KeyStore;
   provider: Provider;
 }
 
@@ -73,11 +75,12 @@ const writeTokens = (
  * @param param0.emailer The emailer object used for sending email notifications
  * @param param0.users The user repository used for managing user accounts
  * @param param0.tokens The token service used for issuing and managing access and refresh tokens
+ * @param param0.keys The signing key store used to serve the public JWKS
  * @param param0.provider The OIDC provider used for handling OpenID Connect interactions
  * @returns An Express application instance with the configured routes and middleware
  */
 export const createApp = (
-  { config, cache, emailer, users, tokens, provider }: Dependencies
+  { config, cache, emailer, users, tokens, keys, provider }: Dependencies
 ): Express => {
   const app: Express = express();
   app.disable('x-powered-by');
@@ -172,6 +175,10 @@ export const createApp = (
     response.redirect(302, '/.well-known/jwks.json');
   });
 
+  app.get('/.well-known/jwks', (_request: Request, response: Response): void => {
+    response.type('application/jwk-set+json').json(keys.publicJwks());
+  });
+
   /**
    * Endpoint for checking whether an access token has been revoked.
    *
@@ -240,7 +247,7 @@ export const createApp = (
         role: 'RESEARCHER', // We always default to RESEARCHER for new signups
         ssoId,
         acceptedTerms,
-        failed_login_attempts: 0,
+        failed_sign_in_attempts: 0,
       });
       if (!user) {
         config.logger.debug({ email }, 'Sign up - failure to create user');
@@ -320,6 +327,7 @@ export const createApp = (
         response.status(401).json({ success: false, message: 'No refresh token available' });
         return;
       }
+
       // Fetch the refresh token record from the cache and validate it against the user record
       const record: RefreshTokenData | undefined = await tokens.consumeRefreshToken(refreshToken);
       config.logger.debug({ refreshToken, userId: record?.userId }, 'Refresh token - found user ID');
@@ -329,6 +337,7 @@ export const createApp = (
         response.status(401).json({ success: false, message: 'Refresh token has expired' });
         return;
       }
+
       // Revoke the old refresh token and issue a new one
       await tokens.revoke(record.jti);
       const issued: AuthTokens = await tokens.issue(config.audienceUI, user);
@@ -417,12 +426,14 @@ export const createApp = (
   });
 
   /**
-   * Reset a password using a time-limited password reset token.
+   * Reset a password using a time-limited password reset token. This will also invalidate any refresh tokens that have
+   * been issued for the user, requiring them to sign in again with their new password.
    *
    * @route POST /password-reset
    */
   app.post('/password-reset', async (request: Request, response: Response, next: NextFunction): Promise<void> => {
     try {
+      // Check that the required fields are present and valid
       const { token, password, passwordConfirmation } = request.body as Record<string, unknown>;
       if (typeof token !== 'string' || typeof password !== 'string' || typeof passwordConfirmation !== 'string') {
         response.status(400).json({ success: false, message: 'token, password, and passwordConfirmation are required' });
@@ -432,11 +443,15 @@ export const createApp = (
         response.status(400).json({ success: false, message: 'Passwords do not match' });
         return;
       }
-      const userId = await tokens.passwordResetUserId(token);
+
+      // Reset the password for the user associated with the provided password reset token
+      const userId: string | undefined = await tokens.passwordResetUserId(token);
       if (!userId || !(await users.resetPassword(userId, password))) {
         response.status(400).json({ success: false, message: 'Invalid or expired password reset token' });
         return;
       }
+
+      // delete the password reset token after successful password reset
       await tokens.deletePasswordResetToken(token);
       response.status(200).json({ success: true, message: 'ok' });
     } catch (error) {
