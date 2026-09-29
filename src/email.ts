@@ -106,7 +106,8 @@ export const sendResetPasswordEmail = async (
         );
         return false;
     }
-    const resetPasswordUrl = `${config.domain}/login/reset-password?token=${resetToken}`;
+    const protocol = ['development', 'tests'].includes(process.env.NODE_ENV || '') ? 'http://' : 'https://';
+    const resetPasswordUrl = `${protocol}${config.domain}/login/reset-password?token=${resetToken}`;
 
     const message = `
 <p>Hello ${userEmail},</p>

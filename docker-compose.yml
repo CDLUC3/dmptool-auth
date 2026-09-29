@@ -24,7 +24,7 @@ services:
       - "ENV=dev"
       - "NODE_ENV=development"
       - "PORT=4646"
-      - "ISSUER=http://localhost:4646"
+      - "ISSUER=http://auth:4646"
 
       - "DB_HOST=apollo-mysql"
       - "DB_PORT=3306"

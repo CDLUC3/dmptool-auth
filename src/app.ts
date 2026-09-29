@@ -1,5 +1,6 @@
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { decodeJwt } from 'jose';
+import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import type { Grant, Interaction, Provider, UnknownObject } from 'oidc-provider';
@@ -98,6 +99,32 @@ export const createApp = (
     response.status(200).json({ status: 'ok' });
   });
 
+  // Enable CORS for all routes except the ALB health check
+  app.use(
+    cors({
+      origin: (origin, callback) => {
+        // Allow requests with no origin (like mobile apps, curl, or server-to-server Next.js SSR)
+        if (!origin) return callback(null, true);
+
+        const allowedOrigins = [
+          `http://${process.env.domain}`,
+          `https://${process.env.domain}`,
+        ];
+
+        if (allowedOrigins.includes(origin) || ['development', 'test'].includes(config.env)) {
+          // Echo back the exact requesting origin (required when credentials: true)
+          return callback(null, origin);
+        }
+
+        return callback(new Error('Not allowed by CORS'));
+      },
+      credentials: true,
+      methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+      allowedHeaders: ['Content-Type', 'Authorization', 'X-CSRF-Token'],
+      exposedHeaders: ['X-CSRF-Token'],
+    })
+  )
+
   /**
    * CSRF token endpoint to generate and return a new CSRF token.
    *
@@ -108,7 +135,6 @@ export const createApp = (
     try {
       const token = randomUUID().replaceAll('-', '');
       await cache.set(`auth:csrf:${token}`, '1', config.ttl.csrf);
-      response.set('Access-Control-Expose-Headers', 'X-CSRF-Token');
       response.set('X-CSRF-Token', token).status(200).send('ok');
     } catch (error) {
       next(error);
@@ -142,7 +168,7 @@ export const createApp = (
    * @returns A response with a status of 403 if the CSRF token is invalid, or calls the next middleware function if valid
    */
   app.use(async (request: Request, response: Response, next: NextFunction): Promise<void> => {
-    if (!['/signup', '/signin', '/refresh-token', '/signout', '/password-reset/token', '/change-password'].includes(request.path)
+    if (!['/sign-up', '/sign-in', '/refresh-token', '/sign-out', '/password-reset/token', '/change-password'].includes(request.path)
       || ['GET', 'HEAD', 'OPTIONS'].includes(request.method)) {
       next();
       return;
@@ -206,13 +232,13 @@ export const createApp = (
   /**
    * Endpoint for signing up a new user.
    *
-   * @route POST /signup
+   * @route POST /sign-up
    * @param request The Express request object
    * @param response The Express response object
    * @param next The next middleware function in the stack
    * @returns A JSON response indicating the success or failure of the operation
    */
-  app.post('/signup', async (request: Request, response: Response, next: NextFunction): Promise<void> => {
+  app.post('/sign-up', async (request: Request, response: Response, next: NextFunction): Promise<void> => {
     try {
       const body = request.body as Record<string, string | undefined>;
       const pendingSignupId = request.cookies[`${config.tokens.ssoPending}`] as string | undefined;
@@ -276,13 +302,13 @@ export const createApp = (
   /**
    * Endpoint for signing in a user via email and password.
    *
-   * @route POST /signin
+   * @route POST /sign-in
    * @param request The Express request object
    * @param response The Express response object
    * @param next The next middleware function in the stack
    * @returns A JSON response indicating the success or failure of the operation
    */
-  app.post('/signin', async (request: Request, response: Response, next: NextFunction): Promise<void> => {
+  app.post('/sign-in', async (request: Request, response: Response, next: NextFunction): Promise<void> => {
     try {
       const { email, password } = request.body as Record<string, string>;
       if (!email || !password) {
@@ -354,13 +380,13 @@ export const createApp = (
   /**
    * Endpoint for signing out a user.
    *
-   * @route POST /signout
+   * @route POST /sign-out
    * @param request The Express request object
    * @param response The Express response object
    * @param next The next middleware function in the stack
    * @returns A JSON response indicating the success or failure of the operation
    */
-  app.post('/signout', async (request: Request, response: Response, next: NextFunction): Promise<void> => {
+  app.post('/sign-out', async (request: Request, response: Response, next: NextFunction): Promise<void> => {
     try {
       const accessToken = request.cookies[config.tokens.access] as string | undefined;
       const refreshToken = request.cookies[config.tokens.refresh] as string | undefined;
@@ -418,7 +444,13 @@ export const createApp = (
   app.post('/password-reset/verify', async (request: Request, response: Response, next: NextFunction): Promise<void> => {
     try {
       const token = (request.body as Record<string, unknown> | undefined)?.token;
+
       const valid = typeof token === 'string' && Boolean(await tokens.passwordResetUserId(token));
+      if (!valid) {
+        response.status(400).json({ valid: false, message: 'Invalid or expired password reset token' });
+        return;
+      }
+
       response.status(200).json({ valid });
     } catch (error) {
       next(error);
@@ -542,7 +574,7 @@ export const createApp = (
    * @param request The Express request object
    * @param response The Express response object
    * @param next The next middleware function in the stack
-   * @returns A redirect response to the signup page if the user is not found, or a redirect to the home page
+   * @returns A redirect response to the sign-up page if the user is not found, or a redirect to the home page
    * if the user is authenticated
    */
   app.all(['/sso/callback', '/sso/callback/:id'], async (request: Request, response: Response, next: NextFunction): Promise<void> => {

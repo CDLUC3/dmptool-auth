@@ -16,8 +16,8 @@ const logger = {
   error: jest.fn(),
   info: jest.fn(),
 } as unknown as Logger;
-const sendMail = jest.fn<() => Promise<{ messageId: string }>>();
-const emailer = { sendMail } as Parameters<typeof sendResetPasswordEmail>[1];
+const sendMail = jest.fn<(message: { html?: string }) => Promise<{ messageId?: string } | undefined>>();
+const emailer = { sendMail } as unknown as Parameters<typeof sendResetPasswordEmail>[1];
 
 const config: Config = {
   logger,
@@ -29,12 +29,13 @@ const config: Config = {
   helpPageUrl: 'https://app.example.test/help',
   doNotReplyAddress: 'no-reply@example.test',
   issuer: 'https://auth.example.test',
+  audienceAPI: 'my-api',
+  audienceUI: 'my-ui',
   tokens: {
     access: 'access',
     refresh: 'refresh',
     ssoPending: 'sso-pending',
-    audience: 'https://app.example.test',
-    validAudiences: ['https://app.example.test'],
+    validAudiences: ['my-ui', 'my-api'],
     keyRotationSeconds: 60 * 60 * 24 * 30,
   },
   cache: {},

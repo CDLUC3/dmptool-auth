@@ -24,10 +24,10 @@ All routes are rooted at `ISSUER`. Routes marked **CSRF** require a valid `X-CSR
 | `GET` | `/healthz` | Verifies that the service can reach Valkey and returns `{ "status": "ok" }`. |
 | `GET` | `/csrf` | Creates a CSRF token, returns `ok`, and exposes it in `X-CSRF-Token`. |
 | `POST` | `/csrf/verify` | Checks, without consuming, the supplied `X-CSRF-Token`; returns `{ "valid": boolean }`. |
-| `POST` | `/signup` **CSRF** | Creates a `RESEARCHER` user from `email`, `password`, `givenName`, `surName`, optional `affiliationId`, `languageId`, and `acceptedTerms`; then sets browser auth cookies. An SSO handoff cookie can supply the SSO identity fields. |
-| `POST` | `/signin` **CSRF** | Authenticates `email` and `password`, then sets browser auth cookies. |
+| `POST` | `/sign-up` **CSRF** | Creates a `RESEARCHER` user from `email`, `password`, `givenName`, `surName`, optional `affiliationId`, `languageId`, and `acceptedTerms`; then sets browser auth cookies. An SSO handoff cookie can supply the SSO identity fields. |
+| `POST` | `/sign-in` **CSRF** | Authenticates `email` and `password`, then sets browser auth cookies. |
 | `POST` | `/refresh-token` **CSRF** | Consumes the refresh-token cookie and replaces both browser auth cookies. |
-| `POST` | `/signout` **CSRF** | Revokes the current access and refresh tokens, then clears both browser auth cookies. |
+| `POST` | `/sign-out` **CSRF** | Revokes the current access and refresh tokens, then clears both browser auth cookies. |
 | `POST` | `/password-reset/token` **CSRF** | Requires a valid access-token cookie and returns a one-time password-reset token. |
 | `POST` | `/password-reset/verify` | Checks whether body field `token` is valid without consuming it; returns `{ "valid": boolean }`. |
 | `POST` | `/password-reset` | Consumes `token`, `password`, and `passwordConfirmation` to reset a password. |
@@ -62,7 +62,7 @@ flowchart TB
     Valkey[Valkey]
 
     Browser -->|GET /healthz, GET /csrf, POST /csrf/verify| Auth
-    Browser -->|POST /signup, /signin, /refresh-token, /signout| Auth
+    Browser -->|POST /sign-up, /sign-in, /refresh-token, /sign-out| Auth
     Browser -->|POST /password-reset/token, /password-reset, /change-password| Auth
     Browser -->|GET /revocations/:jti, GET /jwks.json| Auth
     Browser -->|GET or POST /sso, /sso/passthru| Auth
@@ -127,7 +127,7 @@ sequenceDiagram
     Auth->>Valkey: Store one-time CSRF token
     Auth-->>Browser: X-CSRF-Token
     alt Email and password
-        Browser->>Auth: POST /signup or /signin + X-CSRF-Token
+        Browser->>Auth: POST /sign-up or /sign-in + X-CSRF-Token
         Auth->>MySQL: Create user or verify password
     else Institutional SSO
         Browser->>Auth: GET or POST /sso (email, entityId)

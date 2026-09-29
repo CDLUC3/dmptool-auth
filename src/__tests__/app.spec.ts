@@ -27,11 +27,11 @@ const mockLogger = { debug: jest.fn(), error: jest.fn(), info: jest.fn(), warn: 
 const sendMail = jest.fn<(message: { html?: string }) => Promise<{ messageId: string }>>();
 const emailer = { sendMail } as unknown as Mail<SMTPSentMessageInfo>;
 
-const buildApp = async () => {
+const buildApp = async (env = 'test') => {
   const config: Config = {
     logger: mockLogger,
     port: 3000,
-    env: 'test',
+    env,
     domain: 'https://app.example.test',
     applicationName: 'DMP Tool',
     helpDeskAddress: 'help@example.test',
@@ -120,6 +120,83 @@ describe('authentication routes', () => {
     sendMail.mockResolvedValue({ messageId: 'message-1' });
   });
 
+  it('applies CORS policies for development and production requests', async () => {
+    const { app: developmentApp } = await buildApp();
+    await request(developmentApp).get('/csrf')
+      .set('Origin', 'https://local.example.test')
+      .expect('Access-Control-Allow-Origin', 'https://local.example.test')
+      .expect('Access-Control-Allow-Credentials', 'true')
+      .expect('Access-Control-Expose-Headers', 'X-CSRF-Token')
+      .expect(200);
+
+    const previousDomain = process.env.domain;
+    process.env.domain = 'auth.example.test';
+    try {
+      const { app: productionApp } = await buildApp('production');
+      await request(productionApp).options('/sign-up')
+        .set('Origin', 'https://auth.example.test')
+        .set('Access-Control-Request-Method', 'POST')
+        .expect('Access-Control-Allow-Origin', 'https://auth.example.test')
+        .expect('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS')
+        .expect('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-CSRF-Token')
+        .expect(204);
+
+      await request(productionApp).get('/csrf')
+        .set('Origin', 'https://untrusted.example.test')
+        .expect(500);
+    } finally {
+      if (previousDomain === undefined) {
+        delete process.env.domain;
+      } else {
+        process.env.domain = previousDomain;
+      }
+    }
+  });
+
+  it('handles sign-in validation, authentication errors, and failed user creation', async () => {
+    const { app, users } = await buildApp();
+
+    const missingEmailCsrf = await request(app).get('/csrf').expect(200);
+    await request(app).post('/sign-in')
+      .set('X-CSRF-Token', missingEmailCsrf.headers['x-csrf-token'] as string)
+      .send({ password: 'Passw0rd!' })
+      .expect(401, { success: false, message: 'Invalid credentials' });
+
+    const missingPasswordCsrf = await request(app).get('/csrf').expect(200);
+    await request(app).post('/sign-in')
+      .set('X-CSRF-Token', missingPasswordCsrf.headers['x-csrf-token'] as string)
+      .send({ email: 'alice@example.test' })
+      .expect(401, { success: false, message: 'Invalid credentials' });
+
+    jest.spyOn(users, 'authenticate').mockRejectedValueOnce(new Error('Database unavailable'));
+    const authenticationErrorCsrf = await request(app).get('/csrf').expect(200);
+    await request(app).post('/sign-in')
+      .set('X-CSRF-Token', authenticationErrorCsrf.headers['x-csrf-token'] as string)
+      .send({ email: 'alice@example.test', password: 'Passw0rd!' })
+      .expect(500, { success: false, message: 'Internal server error' });
+
+    jest.spyOn(users, 'create').mockResolvedValueOnce(undefined);
+    const failedSignupCsrf = await request(app).get('/csrf').expect(200);
+    await request(app).post('/sign-up')
+      .set('X-CSRF-Token', failedSignupCsrf.headers['x-csrf-token'] as string)
+      .send({
+        email: 'alice@example.test',
+        password: 'Passw0rd!',
+        givenName: 'Alice',
+        surName: 'Example',
+      })
+      .expect(400, { success: false, message: 'Failed to create user' });
+
+    const missingPasswordFieldsCsrf = await request(app).get('/csrf').expect(200);
+    await request(app).post('/change-password')
+      .set('X-CSRF-Token', missingPasswordFieldsCsrf.headers['x-csrf-token'] as string)
+      .send({})
+      .expect(400, {
+        success: false,
+        message: 'currentPassword, newPassword, and newPasswordConfirmation are required',
+      });
+  });
+
   it('supports the csrf, signup, sign-in, refresh, and sign-out workflow', async () => {
     const { app } = await buildApp();
     const agent = request.agent(app);
@@ -129,7 +206,7 @@ describe('authentication routes', () => {
       .set('X-CSRF-Token', csrfToken)
       .expect(200, { valid: true });
 
-    const signup = await agent.post('/signup')
+    const signup = await agent.post('/sign-up')
       .set('X-CSRF-Token', csrfToken)
       .send({
         email: 'alice@example.test',
@@ -153,13 +230,13 @@ describe('authentication routes', () => {
     const refreshedJti = decodeJwt(refreshedAccessCookie!.split(';')[0].slice('test_access='.length)).jti as string;
     await request(app).get(`/revocations/${refreshedJti}`).expect(200, { revoked: false });
 
-    await agent.post('/signout')
+    await agent.post('/sign-out')
       .set('X-CSRF-Token', refresh.headers['x-csrf-token'] as string)
       .expect(200);
     await request(app).get(`/revocations/${refreshedJti}`).expect(200, { revoked: true });
 
     const signinCsrf = await agent.get('/csrf').expect(200);
-    const signin = await agent.post('/signin')
+    const signin = await agent.post('/sign-in')
       .set('X-CSRF-Token', signinCsrf.headers['x-csrf-token'] as string)
       .send({ email: 'alice@example.test', password: 'Passw0rd!' })
       .expect(200);
@@ -176,7 +253,7 @@ describe('authentication routes', () => {
       .set('X-CSRF-Token', token)
       .expect(200, { valid: true });
     await request(app).post('/csrf/verify').expect(200, { valid: false });
-    await request(app).post('/signin')
+    await request(app).post('/sign-in')
       .set('X-CSRF-Token', token)
       .send({ email: 'nobody@example.test', password: 'Passw0rd!' })
       .expect(401, { success: false, message: 'Invalid credentials' });
@@ -186,7 +263,7 @@ describe('authentication routes', () => {
     const { app, cache } = await buildApp();
     const agent = request.agent(app);
     const signupCsrf = await agent.get('/csrf').expect(200);
-    await agent.post('/signup')
+    await agent.post('/sign-up')
       .set('X-CSRF-Token', signupCsrf.headers['x-csrf-token'] as string)
       .send({
         email: 'alice@example.test',
@@ -215,9 +292,9 @@ describe('authentication routes', () => {
     await expect(cache.get(`auth:password-reset:${token}`)).resolves.toBe('1');
     await request(app).post('/password-reset/verify')
       .send({ token: 'expired-token' })
-      .expect(200, { valid: false });
+      .expect(400, { valid: false, message: 'Invalid or expired password reset token' });
     await request(app).post('/password-reset/verify')
-      .expect(200, { valid: false });
+      .expect(400, { valid: false, message: 'Invalid or expired password reset token' });
 
     await request(app).post('/password-reset').send({
       token,
@@ -251,7 +328,7 @@ describe('authentication routes', () => {
 
     await request(app).post('/password-reset/verify')
       .send({ token })
-      .expect(200, { valid: false });
+      .expect(400, { valid: false, message: 'Invalid or expired password reset token' });
     await request(app).post('/password-reset').send({
       token,
       password: 'Another1!',
@@ -259,7 +336,7 @@ describe('authentication routes', () => {
     }).expect(400, { success: false, message: 'Invalid or expired password reset token' });
 
     const signinCsrf = await agent.get('/csrf').expect(200);
-    await agent.post('/signin')
+    await agent.post('/sign-in')
       .set('X-CSRF-Token', signinCsrf.headers['x-csrf-token'] as string)
       .send({ email: 'alice@example.test', password: 'NewPassw0rd!' })
       .expect(200, { success: true, message: 'ok' });
@@ -288,7 +365,7 @@ describe('authentication routes', () => {
     sendMail.mockRejectedValueOnce(new Error('SMTP unavailable'));
     const { app, cache } = await buildApp();
     const signupCsrf = await request(app).get('/csrf').expect(200);
-    await request(app).post('/signup')
+    await request(app).post('/sign-up')
       .set('X-CSRF-Token', signupCsrf.headers['x-csrf-token'] as string)
       .send({
         email: 'alice@example.test',
@@ -312,7 +389,7 @@ describe('authentication routes', () => {
     const { app } = await buildApp();
     const agent = request.agent(app);
     const signupCsrf = await agent.get('/csrf').expect(200);
-    await agent.post('/signup')
+    await agent.post('/sign-up')
       .set('X-CSRF-Token', signupCsrf.headers['x-csrf-token'] as string)
       .send({
         email: 'alice@example.test',
@@ -381,13 +458,13 @@ describe('authentication routes', () => {
       .expect(200, { success: true, message: 'ok' });
 
     const signinCsrf = await agent.get('/csrf').expect(200);
-    await agent.post('/signin')
+    await agent.post('/sign-in')
       .set('X-CSRF-Token', signinCsrf.headers['x-csrf-token'] as string)
       .send({ email: 'alice@example.test', password: 'Passw0rd!' })
       .expect(401, { success: false, message: 'Invalid credentials' });
 
     const newPasswordSigninCsrf = await agent.get('/csrf').expect(200);
-    await agent.post('/signin')
+    await agent.post('/sign-in')
       .set('X-CSRF-Token', newPasswordSigninCsrf.headers['x-csrf-token'] as string)
       .send({ email: 'alice@example.test', password: 'NewPassw0rd!' })
       .expect(200, { success: true, message: 'ok' });
@@ -425,11 +502,11 @@ describe('authentication routes', () => {
 
   it('rejects invalid credentials and invalid csrf requests, and exposes provider discovery', async () => {
     const { app } = await buildApp();
-    await request(app).post('/signin')
+    await request(app).post('/sign-in')
       .send({ email: 'nobody@example.test', password: 'Passw0rd!' })
       .expect(403, { error: 'Invalid CSRF token' });
     const csrf = await request(app).get('/csrf').expect(200);
-    await request(app).post('/signin')
+    await request(app).post('/sign-in')
       .set('X-CSRF-Token', csrf.headers['x-csrf-token'] as string)
       .send({ email: 'nobody@example.test', password: 'Passw0rd!' })
       .expect(401, { success: false, message: 'Invalid credentials' });
@@ -440,7 +517,7 @@ describe('authentication routes', () => {
   it('issues cookies for a known Shibboleth user', async () => {
     const { app } = await buildApp();
     const csrf = await request(app).get('/csrf').expect(200);
-    await request(app).post('/signup')
+    await request(app).post('/sign-up')
       .set('X-CSRF-Token', csrf.headers['x-csrf-token'] as string)
       .send({
       email: 'alice@example.test',
@@ -477,7 +554,7 @@ describe('authentication routes', () => {
     expect(cache.get).toHaveBeenCalledWith('healthcheck');
 
     const csrf = await agent.get('/csrf').expect(200);
-    await agent.post('/signin')
+    await agent.post('/sign-in')
       .set('X-CSRF-Token', csrf.headers['x-csrf-token'] as string)
       .send({})
       .expect(401, { success: false, message: 'Invalid credentials' });
@@ -511,7 +588,7 @@ describe('authentication routes', () => {
       });
 
     const csrf = await agent.get('/csrf').expect(200);
-    await agent.post('/signout')
+    await agent.post('/sign-out')
       .set('X-CSRF-Token', csrf.headers['x-csrf-token'] as string)
       .expect(200, {});
 
@@ -533,12 +610,12 @@ describe('authentication routes', () => {
       acceptedTerms: 'true',
     };
     const csrf = await agent.get('/csrf').expect(200);
-    const created = await agent.post('/signup')
+    const created = await agent.post('/sign-up')
       .set('X-CSRF-Token', csrf.headers['x-csrf-token'] as string)
       .send(user)
       .expect(201);
 
-    await agent.post('/signup')
+    await agent.post('/sign-up')
       .set('X-CSRF-Token', created.headers['x-csrf-token'] as string)
       .send(user)
       .expect(409, { success: false, message: 'A user with this email already exists' });
@@ -580,7 +657,7 @@ describe('authentication routes', () => {
     expect(cookie(callback, 'test_refresh')).toBeUndefined();
 
     const csrf = await agent.get('/csrf').expect(200);
-    const signup = await agent.post('/signup')
+    const signup = await agent.post('/sign-up')
       .set('X-CSRF-Token', csrf.headers['x-csrf-token'] as string)
       .send({
         password: 'Passw0rd!',
@@ -606,7 +683,7 @@ describe('authentication routes', () => {
     const agent = request.agent(app);
     const csrf = await agent.get('/csrf').expect(200);
 
-    await agent.post('/signup')
+    await agent.post('/sign-up')
       .set('X-CSRF-Token', csrf.headers['x-csrf-token'] as string)
       .send({
         email: 'alice@example.test',
@@ -857,7 +934,7 @@ describe('authentication routes', () => {
       acceptedTerms: 'true',
     };
 
-    await agent.post('/signup')
+    await agent.post('/sign-up')
       .send(validSignup)
       .expect(403, { error: 'Invalid CSRF token' });
 
@@ -866,20 +943,20 @@ describe('authentication routes', () => {
     expect(csrfToken).toMatch(/^[a-f0-9]{32}$/);
     await expect(cache.get(`auth:csrf:${csrfToken}`)).resolves.toBe('1');
 
-    const missingEmail = await agent.post('/signup')
+    const missingEmail = await agent.post('/sign-up')
       .set('X-CSRF-Token', csrfToken)
       .send({ ...validSignup, email: undefined })
       .expect(400, { success: false, message: 'email, password, givenName, and surName are required' });
     const invalidPasswordCsrf = missingEmail.headers['x-csrf-token'] as string;
     expect(invalidPasswordCsrf).toMatch(/^[a-f0-9]{32}$/);
 
-    const invalidPassword = await agent.post('/signup')
+    const invalidPassword = await agent.post('/sign-up')
       .set('X-CSRF-Token', invalidPasswordCsrf)
       .send({ ...validSignup, password: 'Passw0rd()' })
       .expect(500, { success: false, message: 'Internal server error' });
     const signupCsrf = invalidPassword.headers['x-csrf-token'] as string;
 
-    const signup = await agent.post('/signup')
+    const signup = await agent.post('/sign-up')
       .set('X-CSRF-Token', signupCsrf)
       .send(validSignup)
       .expect(201, { success: true, message: 'ok' });
@@ -901,14 +978,14 @@ describe('authentication routes', () => {
     const signinCsrf = signup.headers['x-csrf-token'] as string;
     expect(signinCsrf).toMatch(/^[a-f0-9]{32}$/);
 
-    const signout = await agent.post('/signout')
+    const signout = await agent.post('/sign-out')
       .set('X-CSRF-Token', signinCsrf)
       .expect(200, {});
     expect(setCookies(signout).join(';')).toContain('test_access=;');
     expect(setCookies(signout).join(';')).toContain('test_refresh=;');
     await expect(cache.get(`auth:refresh:${signupRefreshCookie}`)).resolves.toBeUndefined();
 
-    const signin = await agent.post('/signin')
+    const signin = await agent.post('/sign-in')
       .set('X-CSRF-Token', signout.headers['x-csrf-token'] as string)
       .send({ email: validSignup.email, password: validSignup.password })
       .expect(200, { success: true, message: 'ok' });
@@ -927,7 +1004,7 @@ describe('authentication routes', () => {
     await expect(cache.get(`auth:refresh:${signinRefreshCookie}`)).resolves.toBeUndefined();
     await expect(cache.get(`auth:refresh:${refreshedRefreshCookie}`)).resolves.toBeDefined();
 
-    const revoke = await agent.post('/signout')
+    const revoke = await agent.post('/sign-out')
       .set('X-CSRF-Token', refresh.headers['x-csrf-token'] as string)
       .expect(200, {});
     await expect(cache.get(`auth:refresh:${refreshedRefreshCookie}`)).resolves.toBeUndefined();
