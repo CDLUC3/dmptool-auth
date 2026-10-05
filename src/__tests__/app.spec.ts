@@ -630,6 +630,22 @@ describe('authentication routes', () => {
       .expect(403, { success: false, message: 'Untrusted Shibboleth proxy' });
   });
 
+  it('rejects malformed trusted-proxy secrets and reports invalid access cookies during sign-out', async () => {
+    const { app } = await buildApp();
+
+    await request(app).get('/sso/callback')
+      .set('x-shib-proxy-secret', 'wrong-secret')
+      .set('x-shib-eppn', 'alice@example.test')
+      .set('x-shib-mail', 'alice@example.test')
+      .expect(403, { success: false, message: 'Untrusted Shibboleth proxy' });
+
+    const csrf = await request(app).get('/csrf').expect(200);
+    await request(app).post('/sign-out')
+      .set('X-CSRF-Token', csrf.headers['x-csrf-token'] as string)
+      .set('Cookie', 'test_access=not-a-jwt')
+      .expect(500, { success: false, message: 'Internal server error' });
+  });
+
   it('registers an unknown Shibboleth user from the pending SSO assertion', async () => {
     const { app, cache } = await buildApp();
     const agent = request.agent(app);

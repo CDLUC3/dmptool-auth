@@ -212,14 +212,14 @@ export class KeyStore {
       audience: this.validAudiences,
     });
     if (
-      typeof payload.id !== 'string'
+      (typeof payload.id !== 'string' && typeof payload.id !== 'number')
+      || (typeof payload.jti !== 'string' && typeof payload.jti !== 'number')
       || typeof payload.email !== 'string'
       || typeof payload.givenName !== 'string'
       || typeof payload.surName !== 'string'
       || typeof payload.role !== 'string'
       || typeof payload.affiliationId !== 'string'
       || typeof payload.languageId !== 'string'
-      || typeof payload.jti !== 'string'
       || typeof payload.tokenVersion !== 'number'
       || payload.sub !== payload.id
     ) {

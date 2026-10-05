@@ -98,7 +98,7 @@ export class TokenService {
    */
   async verifyAccessToken(accessToken: string): Promise<TokenClaims | undefined> {
     try {
-      const claims = await this.keyStore.verifyAccessToken(accessToken);
+      const claims: TokenClaims = await this.keyStore.verifyAccessToken(accessToken);
       return await this.isRevoked(claims.jti) ? undefined : claims;
     } catch {
       return undefined;
@@ -109,7 +109,7 @@ export class TokenService {
    * Create a cryptographically secure, time-limited password reset token.
    */
   async issuePasswordResetToken(userId: string): Promise<string> {
-    const token = randomBytes(32).toString('base64url');
+    const token: string = randomBytes(32).toString('base64url');
     await this.cache.set(passwordResetKey(token), userId, this.passwordResetTtlSeconds);
     return token;
   }
