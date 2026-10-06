@@ -16,6 +16,11 @@ const userEmailsTable: string = process.env.DB_USER_EMAILS_TABLE || 'user_emails
 const templateCollaboratorsTable: string = process.env.DB_TEMPLATE_COLLABORATORS_TABLE || 'template_collaborators';
 const projectCollaboratorsTable: string = process.env.DB_PROJECT_COLLABORATORS_TABLE || 'project_collaborators';
 
+export type SignupAttempt = PublicUser & {
+  signupFailed?: true;
+  errors?: Record<string, string | undefined>;
+};
+
 type AuthenticationAttempt = PublicUser & {
   authenticationFailed?: true;
 };
@@ -179,19 +184,25 @@ export class UserStore {
    */
   async create(
     input: Omit<User, 'id' | 'passwordHash' | 'tokenVersion'> & { password: string },
-  ): Promise<PublicUser | undefined> {
+  ): Promise<SignupAttempt> {
+    const errors: Record<string, string | undefined> = {};
+
     // Normalize and validate the email and password
     const email: string = normalizeEmail(input.email);
-    if (!emailPattern.test(email)) throw new Error('Invalid email address');
-    if (!isValidPassword(input.password)) throw new Error('Invalid password format');
-    if (!input.acceptedTerms) throw new Error('Terms must be accepted');
+    if (!emailPattern.test(email)) errors['email'] = 'Invalid email format';
+    if (!isValidPassword(input.password)) errors['password'] = 'Invalid password format';
+    if (!input.acceptedTerms) errors['acceptedTerms'] = 'Terms must be accepted';
+    if (Object.keys(errors).length > 0) return { signupFailed: true, errors } as SignupAttempt;
 
     // Make sure the email is not already in use
     const existing: User | undefined = await this.findByEmail(email);
-    if (existing) throw new Error('A user with this email already exists');
+    if (existing) errors['general'] = 'A user with this email already exists';
 
     // Hash the password using bcrypt
     const passwordHash: string = await this.hashPassword(input.password);
+    if (Object.keys(errors).length > 0) {
+      return { signupFailed: true, errors } as SignupAttempt;
+    }
 
     const response: dbQueryResponse = await queryTable(
       { ...this.config.database, logger: this.config.logger },
@@ -211,13 +222,15 @@ export class UserStore {
     );
     if (!response.results || (response.results as ResultSetHeader).affectedRows === 0) {
       this.config.logger.error({ input }, 'Unable to create new user in the database');
-      return undefined;
+      errors['general'] = 'Something went wrong while creating your account. Please try again later.';
+      return { signupFailed: true, errors } as SignupAttempt;
     }
 
     const userId: number | undefined = (response.results as ResultSetHeader).insertId;
     if (!userId) {
       this.config.logger.error({ input }, 'No id was assigned to new user in the database');
-      return undefined;
+      errors['general'] = 'Unable to create your account. Please try again later.';
+      return { signupFailed: true, errors } as SignupAttempt;
     }
 
     // Backfill the createdById and modifiedById fields for the new user
@@ -242,7 +255,8 @@ export class UserStore {
     const user: PublicUser | undefined = await this.findById(String(userId));
     if (!user) {
       this.config.logger.error({ input, userId: userId }, 'Unable to retrieve newly created user from the database');
-      return undefined;
+      errors['general'] = 'Unable to create your account at this time. Please try again later.';
+      return { signupFailed: true, errors } as SignupAttempt;
     }
 
     return user;
@@ -443,7 +457,6 @@ export class UserStore {
       sql,
       values
     );
-
     const results: unknown[] = Array.isArray(rows) ? rows : Array.isArray(rows.results) ? rows.results : [];
     if (results[0]) {
       const isUser: boolean = isUserRow(results[0] as UserRow);

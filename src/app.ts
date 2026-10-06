@@ -7,7 +7,7 @@ import type { Grant, Interaction, Provider, UnknownObject } from 'oidc-provider'
 import type { CacheInterface } from './cache.js';
 import type { AuthTokens, TokenService } from './tokenService.js';
 import type { Config, PublicUser, RefreshTokenData, ShibbolethAssertion } from './types.js';
-import type { UserStore } from './models/userStore.js';
+import type {SignupAttempt, UserStore} from './models/userStore.js';
 import type { KeyStore } from './models/keyStore.js';
 import type { Mail, SMTPSentMessageInfo } from "nodemailer";
 import { sendResetPasswordEmail } from "./email.js";
@@ -307,7 +307,7 @@ export const createApp = (
       }
 
       config.logger.debug({ email, givenName, surName, affiliationId }, 'Sign up - received request');
-      const user: PublicUser | undefined = await users.create({
+      const user: SignupAttempt = await users.create({
         email,
         password,
         givenName,
@@ -320,9 +320,18 @@ export const createApp = (
         locked: false,
         remainingSignInAttempts: 0,
       });
-      if (!user) {
+
+      if (!user || user.signupFailed) {
         config.logger.debug({ email }, 'Sign up - failure to create user');
-        response.status(400).json({ success: false, message: 'Failed to create user' });
+        const generalError: string | undefined = user.errors?.general;
+        const status: number = generalError === 'A user with this email already exists'
+          ? 409 : generalError === undefined ? 400 : 500;
+        
+        response.status(status).json({
+          success: false,
+          message: (user.errors || {})['general'] || 'Unable to create your account.',
+          errors: user.errors || [],
+        });
         return;
       }
 

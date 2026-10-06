@@ -61,14 +61,15 @@ describe('UserStore', () => {
   });
 
   it.each([
-    ['invalid email', { email: 'not-an-email', password: 'Passw0rd!', acceptedTerms: true }, 'Invalid email address'],
-    ['weak password', { email: 'user@example.test', password: 'password', acceptedTerms: true }, 'Invalid password format'],
-    ['unaccepted terms', { email: 'user@example.test', password: 'Passw0rd!', acceptedTerms: false }, 'Terms must be accepted'],
-  ])('rejects %s before querying the database', async (_, input, message) => {
+    ['invalid email', { email: 'not-an-email', password: 'Passw0rd!', acceptedTerms: true }, 'email', 'Invalid email format'],
+    ['weak password', { email: 'user@example.test', password: 'password', acceptedTerms: true }, 'password', 'Invalid password format'],
+    ['unaccepted terms', { email: 'user@example.test', password: 'Passw0rd!', acceptedTerms: false }, 'acceptedTerms', 'Terms must be accepted'],
+  ])('rejects %s before querying the database', async (_, input, field, message) => {
     const repository = new UserStore(config as never);
-    await expect(repository.create({
+    const resp = await repository.create({
       remainingSignInAttempts: 5, locked: false, givenName: 'User', surName: 'Example', affiliationId: '', languageId: 'en', role: 'RESEARCHER', ...input,
-    })).rejects.toThrow(message);
+    });
+    expect(resp).toEqual({"errors": {[field]: message}, "signupFailed": true});
     expect(queryTable).not.toHaveBeenCalled();
   });
 
@@ -81,11 +82,12 @@ describe('UserStore', () => {
     ['with a disallowed character', 'Password1!('],
   ])('rejects a password that is %s', async (_, password) => {
     const repository = new UserStore(config as never);
-    await expect(repository.create({
+    const resp = await repository.create({
       email: 'user@example.test', password, givenName: 'User', surName: 'Example',
       affiliationId: '', languageId: 'en', role: 'RESEARCHER', acceptedTerms: true,
       remainingSignInAttempts: 5, locked: false
-    })).rejects.toThrow('Invalid password format');
+    });
+    expect(resp).toEqual({"errors": {"password": "Invalid password format"}, "signupFailed": true});
   });
 
   it('handles duplicate and database-failed user creation paths', async () => {
@@ -95,27 +97,30 @@ describe('UserStore', () => {
       role: 'RESEARCHER', affiliationId: '', languageId: 'en', tokenVersion: 0, acceptedTerms: true,
       remainingSignInAttempts: 5, locked: false
     });
-    await expect(repository.create({
+    const resp = await repository.create({
       email: 'user@example.test', password: 'Passw0rd!', givenName: 'User', surName: 'Example',
       affiliationId: '', languageId: 'en', role: 'RESEARCHER', acceptedTerms: true,
       remainingSignInAttempts: 5, locked: false
-    })).rejects.toThrow('A user with this email already exists');
+    });
+    expect(resp).toEqual({"errors": {"general": "A user with this email already exists"}, "signupFailed": true});
 
     jest.spyOn(repository, 'findByEmail').mockResolvedValueOnce(undefined);
     queryTable.mockResolvedValueOnce({ results: { affectedRows: 0 }, fields: [] });
-    await expect(repository.create({
+    const resp2 = await repository.create({
       email: 'user@example.test', password: 'Passw0rd!', givenName: 'User', surName: 'Example',
       affiliationId: '', languageId: 'en', role: 'RESEARCHER', acceptedTerms: true,
       remainingSignInAttempts: 5, locked: false
-    })).resolves.toBeUndefined();
+    });
+    expect(resp2).toEqual({"errors": {"general": "Something went wrong while creating your account. Please try again later."}, "signupFailed": true});
 
     jest.spyOn(repository, 'findByEmail').mockResolvedValueOnce(undefined);
     queryTable.mockResolvedValueOnce({ results: { affectedRows: 1, insertId: 0 }, fields: [] });
-    await expect(repository.create({
+    const resp3 = await repository.create({
       email: 'user@example.test', password: 'Passw0rd!', givenName: '', surName: '',
       affiliationId: '', languageId: '', role: 'RESEARCHER', acceptedTerms: true,
       remainingSignInAttempts: 5, locked: false
-    })).resolves.toBeUndefined();
+    });
+    expect(resp3).toEqual({"errors": {"general": "Unable to create your account. Please try again later."}, "signupFailed": true});
     expect(config.logger.error).toHaveBeenCalled();
   });
 

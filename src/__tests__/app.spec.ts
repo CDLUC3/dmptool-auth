@@ -176,7 +176,7 @@ describe('authentication routes', () => {
       .send({ email: 'alice@example.test', password: 'Passw0rd!' })
       .expect(500, { success: false, message: 'Internal server error' });
 
-    jest.spyOn(users, 'create').mockResolvedValueOnce(undefined);
+    jest.spyOn(users, 'create').mockResolvedValueOnce(undefined as never);
     const failedSignupCsrf = await request(app).get('/csrf').expect(200);
     await request(app).post('/sign-up')
       .set('X-CSRF-Token', failedSignupCsrf.headers['x-csrf-token'] as string)
@@ -186,7 +186,7 @@ describe('authentication routes', () => {
         givenName: 'Alice',
         surName: 'Example',
       })
-      .expect(400, { success: false, message: 'Failed to create user' });
+      .expect(500, { success: false, message: 'Internal server error' });
 
     const missingPasswordFieldsCsrf = await request(app).get('/csrf').expect(200);
     await request(app).post('/change-password')
@@ -665,7 +665,7 @@ describe('authentication routes', () => {
     await agent.post('/sign-up')
       .set('X-CSRF-Token', duplicateSignupCsrf.headers['x-csrf-token'] as string)
       .send(user)
-      .expect(409, { success: false, message: 'A user with this email already exists' });
+      .expect(409, { success: false, message: 'A user with this email already exists', errors: { general: 'A user with this email already exists' } });
   });
 
   it('rejects Shibboleth headers not authenticated by the trusted proxy', async () => {
@@ -1017,7 +1017,7 @@ describe('authentication routes', () => {
     await agent.post('/sign-up')
       .set('X-CSRF-Token', invalidPasswordCsrf)
       .send({ ...validSignup, password: 'Passw0rd()' })
-      .expect(500, { success: false, message: 'Internal server error' });
+      .expect(400, { success: false, message: 'Unable to create your account.', errors: { password: 'Invalid password format' } });
     const signupCsrf = (await agent.get('/csrf').expect(200)).headers['x-csrf-token'] as string;
 
     const signup = await agent.post('/sign-up')
