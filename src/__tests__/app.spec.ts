@@ -110,6 +110,7 @@ const buildApp = async (env = 'test') => {
     }),
     cache,
     users,
+    provider,
   };
 };
 
@@ -1080,6 +1081,69 @@ describe('authentication routes', () => {
       .set('X-CSRF-Token', expiredRefreshCsrf.headers['x-csrf-token'] as string)
       .set('Cookie', `test_refresh=${refreshedRefreshCookie}`)
       .expect(401, { success: false, message: 'Refresh token has expired' });
+  });
+
+  it('handles remaining signup, SSO, sign-out, and interaction error paths', async () => {
+    const { app, provider, users } = await buildApp();
+    const agent = request.agent(app);
+
+    jest.spyOn(users, 'create')
+      .mockResolvedValueOnce({ signupFailed: true, errors: {} } as never)
+      .mockResolvedValueOnce({ signupFailed: true, errors: { general: 'User store unavailable' } } as never);
+
+    const incompleteSignupCsrf = await agent.get('/csrf').expect(200);
+    await agent.post('/sign-up')
+      .set('X-CSRF-Token', incompleteSignupCsrf.headers['x-csrf-token'] as string)
+      .send({
+        email: 'alice@example.test',
+        password: 'Passw0rd!',
+        givenName: 'Alice',
+        surName: 'Example',
+      })
+      .expect(400, { success: false, message: 'Unable to create your account.', errors: {} });
+
+    const failedSignupCsrf = await agent.get('/csrf').expect(200);
+    await agent.post('/sign-up')
+      .set('X-CSRF-Token', failedSignupCsrf.headers['x-csrf-token'] as string)
+      .send({
+        email: 'alice@example.test',
+        password: 'Passw0rd!',
+        givenName: 'Alice',
+        surName: 'Example',
+      })
+      .expect(500, { success: false, message: 'User store unavailable', errors: { general: 'User store unavailable' } });
+
+    const noIdAccessToken = 'eyJhbGciOiJub25lIn0.eyJyb2xlIjoiUkVTRUFSQ0hFUiJ9.c2ln';
+    const signoutCsrf = await agent.get('/csrf').expect(200);
+    await agent.post('/sign-out')
+      .set('X-CSRF-Token', signoutCsrf.headers['x-csrf-token'] as string)
+      .set('Cookie', `test_access=${noIdAccessToken}`)
+      .expect(200, {});
+
+    await request(app).get('/sso/callback')
+      .set(shibbolethProxyHeaders)
+      .set('x-shib-eppn', 'new@example.test')
+      .set('x-shib-mail', 'new@example.test')
+      .expect(302)
+      .expect('Location', '/signup');
+
+    jest.spyOn(users, 'findBySsoId').mockResolvedValueOnce({ id: 'locked-user', locked: true } as never);
+    await request(app).get('/sso/callback')
+      .set(shibbolethProxyHeaders)
+      .set('x-shib-eppn', 'locked@example.test')
+      .set('x-shib-mail', 'locked@example.test')
+      .expect(403, { success: false, message: 'Your account has been locked' });
+
+    jest.spyOn(provider, 'interactionDetails').mockRejectedValueOnce(new Error('Interaction unavailable'));
+    await request(app).get('/interaction/failed').expect(500, { success: false, message: 'Internal server error' });
+
+    jest.spyOn(provider, 'interactionDetails').mockResolvedValueOnce({
+      uid: 'unsupported',
+      prompt: { name: 'select_account', details: {} },
+      params: {},
+    } as never);
+    await request(app).post('/interaction/unsupported')
+      .expect(400, { error: 'unsupported_interaction' });
   });
 });
 
