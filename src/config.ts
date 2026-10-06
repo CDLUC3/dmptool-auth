@@ -182,6 +182,10 @@ export const loadConfig = async (logger: Logger): Promise<Config> => {
     helpPageUrl: process.env.HELP_HOST ?? 'localhost',
     doNotReplyAddress: process.env.DO_NOT_REPLY_ADDRESS ?? 'no-reply@example.com',
 
+    maxFailedSignInAttempts: process.env.MAX_FAILED_SIGNIN_ATTEMPTS ?
+        Number.parseInt(process.env.MAX_FAILED_SIGNIN_ATTEMPTS, 10)
+        : 5,
+
     database: mysqlConfig,
     cache: cacheConfig,
     ses: sesConfig,

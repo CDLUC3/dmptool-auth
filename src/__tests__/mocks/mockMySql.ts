@@ -12,8 +12,9 @@ interface UserRecord {
   acceptedTerms: boolean;
   languageId: string | null;
   ssoId: string | null;
-  active: boolean;
-  locked: boolean;
+  active: number;
+  locked: number;
+  failed_sign_in_attempts: number;
   tokenVersion: number;
   email?: string;
 }
@@ -29,6 +30,8 @@ export interface PersistedUser {
   languageId: string | null;
   ssoId: string | null;
   tokenVersion: number;
+  locked: number;
+  failed_sign_in_attempts: number;
 }
 
 interface OidcRecord {
@@ -88,8 +91,9 @@ export class MockMySqlStore {
         acceptedTerms: Boolean(acceptedTerms),
         languageId: nullableString(languageId),
         ssoId: nullableString(ssoId),
-        active: true,
-        locked: false,
+        active: 1,
+        locked: 0,
+        failed_sign_in_attempts: 0,
         tokenVersion: 0,
       });
       return result(1, id);
@@ -115,6 +119,19 @@ export class MockMySqlStore {
       if (!user || !user.active || user.locked) return result(0);
       user.password = String(values[0]);
       user.tokenVersion += 1;
+      return result(1);
+    }
+    if (sql.startsWith('UPDATE users SET failed_sign_in_attempts = failed_sign_in_attempts + 1')) {
+      const user = this.users.get(Number(values[0]));
+      if (!user || !user.active || user.locked) return result(0);
+      user.failed_sign_in_attempts += 1;
+      if (sql.includes('locked = 1')) user.locked = 1;
+      return result(1);
+    }
+    if (sql.startsWith('UPDATE users SET failed_sign_in_attempts = 0')) {
+      const user = this.users.get(Number(values[1]));
+      if (!user || !user.active || user.locked) return result(0);
+      user.failed_sign_in_attempts = 0;
       return result(1);
     }
     if (sql.startsWith('UPDATE users ') || sql.startsWith('UPDATE template_collaborators ') || sql.startsWith('UPDATE project_collaborators ')) {
@@ -190,6 +207,8 @@ export class MockMySqlStore {
       languageId: user.languageId,
       ssoId: user.ssoId,
       tokenVersion: user.tokenVersion,
+      locked: user.locked,
+      failed_sign_in_attempts: user.failed_sign_in_attempts,
     };
   }
 
@@ -204,7 +223,7 @@ export class MockMySqlStore {
 
   private userRows(predicate: (user: UserRecord) => boolean): UserRecord[] {
     return [...this.users.values()]
-      .filter((user) => user.active && !user.locked && user.email && predicate(user))
+      .filter((user) => user.active && user.email && predicate(user))
       .map((user) => ({ ...user }));
   }
 }

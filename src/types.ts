@@ -16,6 +16,7 @@ export interface Config {
   helpDeskAddress: string;
   helpPageUrl: string;
   doNotReplyAddress: string;
+  maxFailedSignInAttempts: number;
 
   issuer: string;
   audienceUI: string;
@@ -110,6 +111,7 @@ export interface UserRow extends Record<string, unknown> {
   languageId: string | null;
   ssoId: string | null;
   tokenVersion: number | null;
+  locked: boolean;
   failed_sign_in_attempts: number | null;
 }
 
@@ -126,7 +128,8 @@ export interface User {
   tokenVersion: number;
   ssoId?: string;
   acceptedTerms: boolean;
-  failed_sign_in_attempts: number;
+  locked: boolean;
+  remainingSignInAttempts: number;
 }
 
 // A public user object that omits the passwordHash field. This is used when returning user data to clients.

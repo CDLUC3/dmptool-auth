@@ -68,6 +68,50 @@ const writeTokens = (
 };
 
 /**
+ * Express middleware to disable caching for all responses. This middleware sets the appropriate headers
+ * to prevent caching of responses by clients and intermediaries.
+ *
+ * @param req the Express request object
+ * @param res the Express response object
+ * @param next the next middleware function in the stack
+ */
+const nocache = (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): void => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  res.setHeader('Surrogate-Control', 'no-store');
+  next();
+};
+
+/**
+ * Handle user authentication errors by checking the user's account status and responding with
+ * appropriate error messages.
+ *
+ * @param user the authenticated user object containing account information
+ */
+const handleUserAuthErrors = (
+  user: PublicUser & { authenticationFailed?: true },
+): string | undefined => {
+  // If no user was found return a 401
+  if (!user.id) {
+    return 'Invalid credentials';
+  }
+  // If the user has exceeded the maximum number of failed sign-in attempts
+  if (user.locked) {
+    return 'Your account has been locked due to too many failed sign in attempts';
+  }
+  // if the user has failed with a bad password, warn them about the remaining attempts
+  if (user.authenticationFailed && user.remainingSignInAttempts > 0) {
+    return `Invalid credentials. ${user.remainingSignInAttempts} remaining attempts before your account is locked.`
+  }
+  return undefined;
+};
+
+/**
  * Create an Express application with the given dependencies.
  *
  * @param param0 An object containing the dependencies required to create the Express application
@@ -131,11 +175,12 @@ export const createApp = (
    * @route GET /csrf
    * @returns A response with the generated CSRF token in the "X-CSRF-Token" header and a status of "ok"
    */
-  app.get('/csrf', async (_request: Request, response: Response, next: NextFunction): Promise<void> => {
+  app.get('/csrf', nocache, async (_request: Request, response: Response, next: NextFunction): Promise<void> => {
     try {
       const token = randomUUID().replaceAll('-', '');
       await cache.set(`auth:csrf:${token}`, '1', config.ttl.csrf);
-      response.set('X-CSRF-Token', token).status(200).send('ok');
+      response.setHeader('X-CSRF-Token', token);
+      response.status(200).send('ok');
     } catch (error) {
       next(error);
     }
@@ -150,10 +195,14 @@ export const createApp = (
    * @param next The next middleware function in the stack
    * @returns A JSON response indicating whether the CSRF token is valid
    */
-  app.post('/csrf/verify', async (request: Request, response: Response, next: NextFunction): Promise<void> => {
+  app.post('/csrf/verify', nocache, async (request: Request, response: Response, next: NextFunction): Promise<void> => {
     try {
       const token: string | undefined = request.header('X-CSRF-Token');
-      response.status(200).json({ valid: Boolean(token && await cache.get(`auth:csrf:${token}`)) });
+      const isValid: boolean = Boolean(token && await cache.get(`auth:csrf:${token}`));
+      response.status(200).json({
+        valid: isValid,
+        message: isValid ? 'valid CSRF token' : 'Invalid CSRF toke'
+      });
     } catch (error) {
       next(error);
     }
@@ -177,15 +226,10 @@ export const createApp = (
     // Fetch the CSRF token from the request header and validate it against the cache
     const token: string | undefined = request.header('X-CSRF-Token');
     if (!token || !(await cache.consume(`auth:csrf:${token}`))) {
-      response.status(403).json({ error: 'Invalid CSRF token' });
+      response.status(403).json({ message: 'Invalid CSRF token' });
       return;
     }
 
-    // Generate a replacement CSRF token after atomically consuming the used token.
-    const replacement: string = randomUUID().replaceAll('-', '');
-    await cache.set(`auth:csrf:${replacement}`, '1', 3600);
-    response.set('Access-Control-Expose-Headers', 'X-CSRF-Token');
-    response.set('X-CSRF-Token', replacement);
     next();
   });
 
@@ -238,7 +282,7 @@ export const createApp = (
    * @param next The next middleware function in the stack
    * @returns A JSON response indicating the success or failure of the operation
    */
-  app.post('/sign-up', async (request: Request, response: Response, next: NextFunction): Promise<void> => {
+  app.post('/sign-up', nocache, async (request: Request, response: Response, next: NextFunction): Promise<void> => {
     try {
       const body = request.body as Record<string, string | undefined>;
       const pendingSignupId = request.cookies[`${config.tokens.ssoPending}`] as string | undefined;
@@ -273,7 +317,8 @@ export const createApp = (
         role: 'RESEARCHER', // We always default to RESEARCHER for new signups
         ssoId,
         acceptedTerms,
-        failed_sign_in_attempts: 0,
+        locked: false,
+        remainingSignInAttempts: 0,
       });
       if (!user) {
         config.logger.debug({ email }, 'Sign up - failure to create user');
@@ -308,7 +353,7 @@ export const createApp = (
    * @param next The next middleware function in the stack
    * @returns A JSON response indicating the success or failure of the operation
    */
-  app.post('/sign-in', async (request: Request, response: Response, next: NextFunction): Promise<void> => {
+  app.post('/sign-in', nocache, async (request: Request, response: Response, next: NextFunction): Promise<void> => {
     try {
       const { email, password } = request.body as Record<string, string>;
       if (!email || !password) {
@@ -317,10 +362,13 @@ export const createApp = (
         return;
       }
       // Authenticate the user using the provided email and password
-      const user: PublicUser | undefined = await users.authenticate(email, password);
-      if (!user) {
-        config.logger.debug({ email }, 'Sign in - no matching user found');
-        response.status(401).json({ success: false, message: 'Invalid credentials' });
+      const user = await users.authenticate(email, password);
+
+      // Check for any authentication errors, such as invalid credentials or account lockout
+      const errMessage: string | undefined = handleUserAuthErrors(user);
+      if (errMessage) {
+        config.logger.debug({ email, message: errMessage }, 'Sign in - failed');
+        response.status(401).json({ success: false, message: errMessage });
         return;
       }
 
@@ -343,7 +391,7 @@ export const createApp = (
    * @param next The next middleware function in the stack
    * @returns A JSON response indicating the success or failure of the operation
    */
-  app.post('/refresh-token', async (request: Request, response: Response, next: NextFunction): Promise<void> => {
+  app.post('/refresh-token', nocache, async (request: Request, response: Response, next: NextFunction): Promise<void> => {
     try {
       const refreshToken = request.cookies[config.tokens.refresh] as string | undefined;
       config.logger.debug({ refreshToken }, 'Refresh token - from cache');
@@ -364,8 +412,7 @@ export const createApp = (
         return;
       }
 
-      // Revoke the old refresh token and issue a new one
-      await tokens.revoke(record.jti);
+      // Consume the old refresh token and issue a new one.
       const issued: AuthTokens = await tokens.issue(config.audienceUI, user);
 
       // Write the new access and refresh tokens to the response cookies
@@ -386,14 +433,14 @@ export const createApp = (
    * @param next The next middleware function in the stack
    * @returns A JSON response indicating the success or failure of the operation
    */
-  app.post('/sign-out', async (request: Request, response: Response, next: NextFunction): Promise<void> => {
+  app.post('/sign-out', nocache, async (request: Request, response: Response, next: NextFunction): Promise<void> => {
     try {
       const accessToken = request.cookies[config.tokens.access] as string | undefined;
       const refreshToken = request.cookies[config.tokens.refresh] as string | undefined;
       if (accessToken) {
         config.logger.debug({ accessToken }, 'Sign out - revoking access token');
-        const { jti } = decodeJwt(accessToken);
-        if (typeof jti === 'string') await tokens.revoke(jti);
+        const { id } = decodeJwt(accessToken);
+        if (typeof id === 'string') await tokens.revoke(id);
       }
       if (refreshToken) await tokens.consumeRefreshToken(refreshToken);
       config.logger.debug({ accessToken }, 'Sign out - clearing cookies');
@@ -410,6 +457,10 @@ export const createApp = (
    * Create a password reset token for the specified email address
    *
    * @route POST /password-reset/token
+   * @param request The Express request object
+   * @param response The Express response object
+   * @param next The next middleware function in the stack
+   * @returns A JSON response indicating the success or failure of the operation
    */
   app.post('/password-reset/token', async (request: Request, response: Response, next: NextFunction): Promise<void> => {
     try {
@@ -418,13 +469,14 @@ export const createApp = (
         response.status(400).json({ success: false, message: 'Email is required' });
         return;
       }
-      const claims = await users.findByEmail(email);
+      const claims: PublicUser | undefined = await users.findByEmail(email);
       if (!claims) {
         response.status(404).json({ success: false, message: 'User not found' });
         return;
       }
-      const token = await tokens.issuePasswordResetToken(claims.id);
-      const delivered = await sendResetPasswordEmail(config, emailer, claims.email, token);
+      const token: string = await tokens.issuePasswordResetToken(claims.id);
+
+      const delivered: boolean = await sendResetPasswordEmail(config, emailer, claims.email, token);
       if (!delivered) {
         await tokens.deletePasswordResetToken(token);
         response.status(502).json({ success: false, message: 'Unable to send password reset email' });
@@ -441,7 +493,7 @@ export const createApp = (
    *
    * @route POST /password-reset/verify
    */
-  app.post('/password-reset/verify', async (request: Request, response: Response, next: NextFunction): Promise<void> => {
+  app.post('/password-reset/verify', nocache, async (request: Request, response: Response, next: NextFunction): Promise<void> => {
     try {
       const token = (request.body as Record<string, unknown> | undefined)?.token;
 
@@ -463,7 +515,7 @@ export const createApp = (
    *
    * @route POST /password-reset
    */
-  app.post('/password-reset', async (request: Request, response: Response, next: NextFunction): Promise<void> => {
+  app.post('/password-reset', nocache, async (request: Request, response: Response, next: NextFunction): Promise<void> => {
     try {
       // Check that the required fields are present and valid
       const { token, password, passwordConfirmation } = request.body as Record<string, unknown>;
@@ -500,7 +552,7 @@ export const createApp = (
    *
    * @route POST /change-password
    */
-  app.post('/change-password', async (request: Request, response: Response, next: NextFunction): Promise<void> => {
+  app.post('/change-password', nocache, async (request: Request, response: Response, next: NextFunction): Promise<void> => {
     try {
       const { currentPassword, newPassword, newPasswordConfirmation } = request.body as Record<string, unknown>;
       if (
@@ -548,7 +600,7 @@ export const createApp = (
    * @param next The next middleware function in the stack
    * @returns A redirect response to the SSO login page
    */
-  app.all(['/sso', '/sso/passthru'], (request: Request, response: Response) => {
+  app.all(['/sso', '/sso/passthru'], nocache, (request: Request, response: Response) => {
     const values: unknown = request.method === 'GET' ? request.query : request.body;
     const { email, entityId } = values as Record<string, string>;
     if (!email || !email.includes('@')) {
@@ -577,7 +629,7 @@ export const createApp = (
    * @returns A redirect response to the sign-up page if the user is not found, or a redirect to the home page
    * if the user is authenticated
    */
-  app.all(['/sso/callback', '/sso/callback/:id'], async (request: Request, response: Response, next: NextFunction): Promise<void> => {
+  app.all(['/sso/callback', '/sso/callback/:id'], nocache, async (request: Request, response: Response, next: NextFunction): Promise<void> => {
     try {
       if (!hasTrustedShibbolethProxy(request.headers, config.shibbolethProxySecret)) {
         config.logger.warn({ params: request.params }, 'SSO Callback - untrusted proxy');
@@ -591,6 +643,8 @@ export const createApp = (
         response.status(400).json({ success: false, message: 'Missing Shibboleth identity headers' });
         return;
       }
+
+      // Look up the user by their SSO ID (subject) in the user store
       const user: PublicUser | undefined = await users.findBySsoId(subject);
       if (!user) {
         config.logger.debug({ subject }, 'SSO Callback - no matching user found');
@@ -598,6 +652,13 @@ export const createApp = (
         await cache.set(`auth:sso-pending:${signupId}`, JSON.stringify(assertion), 600);
         response.cookie(config.tokens.ssoPending, signupId, cookieOptions(config.cookieSecure, 600));
         response.status(302).location('/signup').send();
+        return;
+      }
+
+      // Check if the user's account is locked and respond with an error if so
+      if (user.locked) {
+        config.logger.debug({ user }, 'SSO Callback - user account locked');
+        response.status(403).json({ success: false, message: 'Your account has been locked' });
         return;
       }
 
@@ -647,21 +708,28 @@ export const createApp = (
   app.post('/interaction/:uid', async (request: Request, response: Response, next: NextFunction): Promise<void> => {
     try {
       const details: Interaction = await provider.interactionDetails(request, response);
+      // Handle login interaction
       if (details.prompt.name === 'login') {
         config.logger.debug({ details }, 'OIDC interaction - login initiated');
         const { email, password } = request.body as Record<string, string>;
-        const user: PublicUser | undefined = await users.authenticate(email, password);
-        if (!user) {
-          config.logger.debug({ details }, 'OIDC interaction - no user found');
-          response.status(401).json({ error: 'invalid_credentials' });
+        const user = await users.authenticate(email, password);
+
+        // Check for any authentication errors, such as invalid credentials or account lockout
+        const errMessage: string | undefined = handleUserAuthErrors(user);
+        if (errMessage) {
+          config.logger.debug({ email, message: errMessage }, 'OIDC interaction - failed');
+          response.status(401).json({ success: false, message: errMessage });
           return;
         }
+
         config.logger.debug({ details }, 'OIDC interaction - login successful');
         await provider.interactionFinished(request, response, {
           login: { accountId: user.id, acr: 'pwd', amr: ['pwd'], remember: true, ts: Math.floor(Date.now() / 1000) },
         });
         return;
       }
+
+      // Handle consent interaction
       if (details.prompt.name === 'consent') {
         config.logger.debug({ details }, 'OIDC interaction - consent initiated');
         const accountId: string | undefined = details.session?.accountId;

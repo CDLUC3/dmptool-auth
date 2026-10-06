@@ -5,7 +5,7 @@ import type { PublicUser, TokenClaims } from './types.js';
 
 // Helper functions to generate cache keys for refresh tokens and revoked access tokens
 const refreshKey = (token: string): string => `auth:refresh:${token}`;
-const revokedKey = (jti: string): string => `auth:revoked:${jti}`;
+const revokedKey = (userId: string): string => `auth:revoked:${userId}`;
 const passwordResetKey = (token: string): string => `auth:password-reset:${token}`;
 
 export interface AuthTokens {
@@ -74,23 +74,23 @@ export class TokenService {
   }
 
   /**
-   * Revoke an access token by storing its jti in the cache with a TTL equal to the access token's TTL.
+   * Revoke a user's access tokens by storing their user ID in the cache with a TTL equal to the access token's TTL.
    *
-   * @param jti the unique identifier of the access token to revoke
+   * @param userId the user's unique identifier
    * @returns A Promise that resolves when the access token has been revoked.
    */
-  async revoke(jti: string): Promise<void> {
-    await this.cache.set(revokedKey(jti), '1', this.accessTtlSeconds);
+  async revoke(userId: string): Promise<void> {
+    await this.cache.set(revokedKey(userId), '1', this.accessTtlSeconds);
   }
 
   /**
    * Determine whether an access token has been revoked.
    *
-   * @param jti the unique identifier of the access token to check
+   * @param userId the user's unique identifier
    * @returns whether the access token has been revoked
    */
-  async isRevoked(jti: string): Promise<boolean> {
-    return (await this.cache.get(revokedKey(jti))) !== undefined;
+  async isRevoked(userId: string): Promise<boolean> {
+    return (await this.cache.get(revokedKey(userId))) !== undefined;
   }
 
   /**
@@ -99,7 +99,7 @@ export class TokenService {
   async verifyAccessToken(accessToken: string): Promise<TokenClaims | undefined> {
     try {
       const claims: TokenClaims = await this.keyStore.verifyAccessToken(accessToken);
-      return await this.isRevoked(claims.jti) ? undefined : claims;
+      return await this.isRevoked(claims.id) ? undefined : claims;
     } catch {
       return undefined;
     }

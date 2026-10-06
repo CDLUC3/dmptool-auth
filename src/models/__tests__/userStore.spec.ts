@@ -10,6 +10,7 @@ const config = {
   database: {},
   bcryptSaltRounds: 4,
   pepperSecret: 'test-pepper-secret',
+  maxFailedSignInAttempts: 5,
   logger: { error: jest.fn() },
 };
 
@@ -33,7 +34,8 @@ describe('UserStore', () => {
       .mockResolvedValueOnce({ results: { affectedRows: 1 }, fields: [] })
       .mockResolvedValueOnce({ results: [{
         id: 42, email: 'alice@example.test', password: 'hash', role: 'RESEARCHER',
-        givenName: 'Alice', surName: 'Example', affiliationId: 'affiliation-1', languageId: 'en-US', ssoId: null,
+        givenName: 'Alice', surName: 'Example', affiliationId: 'affiliation-1', languageId: 'en-US',
+        ssoId: null, locked: 0, failed_sign_in_attempts: 0,
       }], fields: [] });
     const repository = new UserStore(config as never);
     const user = await repository.create({
@@ -45,7 +47,8 @@ describe('UserStore', () => {
       languageId: ' en-US ',
       role: 'RESEARCHER',
       acceptedTerms: true,
-      failed_sign_in_attempts: 0,
+      remainingSignInAttempts: 5,
+      locked: false,
     });
 
     expect(user).toMatchObject({ id: '42', email: 'alice@example.test', role: 'RESEARCHER' });
@@ -64,7 +67,7 @@ describe('UserStore', () => {
   ])('rejects %s before querying the database', async (_, input, message) => {
     const repository = new UserStore(config as never);
     await expect(repository.create({
-      givenName: 'User', surName: 'Example', affiliationId: '', languageId: 'en', role: 'RESEARCHER', failed_sign_in_attempts: 0, ...input,
+      remainingSignInAttempts: 5, locked: false, givenName: 'User', surName: 'Example', affiliationId: '', languageId: 'en', role: 'RESEARCHER', ...input,
     })).rejects.toThrow(message);
     expect(queryTable).not.toHaveBeenCalled();
   });
@@ -81,7 +84,7 @@ describe('UserStore', () => {
     await expect(repository.create({
       email: 'user@example.test', password, givenName: 'User', surName: 'Example',
       affiliationId: '', languageId: 'en', role: 'RESEARCHER', acceptedTerms: true,
-      failed_sign_in_attempts: 0
+      remainingSignInAttempts: 5, locked: false
     })).rejects.toThrow('Invalid password format');
   });
 
@@ -90,25 +93,28 @@ describe('UserStore', () => {
     jest.spyOn(repository, 'findByEmail').mockResolvedValueOnce({
       id: '1', email: 'user@example.test', passwordHash: 'hash', givenName: '', surName: '',
       role: 'RESEARCHER', affiliationId: '', languageId: 'en', tokenVersion: 0, acceptedTerms: true,
-      failed_sign_in_attempts: 0,
+      remainingSignInAttempts: 5, locked: false
     });
     await expect(repository.create({
       email: 'user@example.test', password: 'Passw0rd!', givenName: 'User', surName: 'Example',
-      affiliationId: '', languageId: 'en', role: 'RESEARCHER', acceptedTerms: true, failed_sign_in_attempts: 0
+      affiliationId: '', languageId: 'en', role: 'RESEARCHER', acceptedTerms: true,
+      remainingSignInAttempts: 5, locked: false
     })).rejects.toThrow('A user with this email already exists');
 
     jest.spyOn(repository, 'findByEmail').mockResolvedValueOnce(undefined);
     queryTable.mockResolvedValueOnce({ results: { affectedRows: 0 }, fields: [] });
     await expect(repository.create({
       email: 'user@example.test', password: 'Passw0rd!', givenName: 'User', surName: 'Example',
-      affiliationId: '', languageId: 'en', role: 'RESEARCHER', acceptedTerms: true, failed_sign_in_attempts: 0
+      affiliationId: '', languageId: 'en', role: 'RESEARCHER', acceptedTerms: true,
+      remainingSignInAttempts: 5, locked: false
     })).resolves.toBeUndefined();
 
     jest.spyOn(repository, 'findByEmail').mockResolvedValueOnce(undefined);
     queryTable.mockResolvedValueOnce({ results: { affectedRows: 1, insertId: 0 }, fields: [] });
     await expect(repository.create({
       email: 'user@example.test', password: 'Passw0rd!', givenName: '', surName: '',
-      affiliationId: '', languageId: '', role: 'RESEARCHER', acceptedTerms: true, failed_sign_in_attempts: 0
+      affiliationId: '', languageId: '', role: 'RESEARCHER', acceptedTerms: true,
+      remainingSignInAttempts: 5, locked: false
     })).resolves.toBeUndefined();
     expect(config.logger.error).toHaveBeenCalled();
   });
@@ -118,7 +124,8 @@ describe('UserStore', () => {
     jest.spyOn(repository, 'findByEmail').mockResolvedValue(undefined);
     jest.spyOn(repository, 'findById').mockResolvedValue({
       id: '7', email: 'alice@example.test', givenName: '', surName: '', role: 'RESEARCHER',
-      affiliationId: '', languageId: 'en-US', tokenVersion: 0, acceptedTerms: true, failed_sign_in_attempts: 0,
+      affiliationId: '', languageId: 'en-US', tokenVersion: 0, acceptedTerms: true,
+      remainingSignInAttempts: 5, locked: false
     });
     queryTable
       .mockResolvedValueOnce({ results: { affectedRows: 1, insertId: 7 }, fields: [] })
@@ -139,6 +146,7 @@ describe('UserStore', () => {
     id: 1, email: 'user@example.test', password: 'hash', role: 'RESEARCHER',
     givenName: 'User', surName: 'Example', affiliationId: 'org', languageId: 'en', ssoId: 'sso-1',
     failed_sign_in_attempts: 0,
+    locked: 0,
   };
 
   it('maps valid raw rows for all public lookup methods', async () => {
@@ -182,20 +190,21 @@ describe('UserStore', () => {
       .findRaw('SELECT', [])).resolves.toBeUndefined();
   });
 
-  it('authenticates passwords and resets failed login attempts after a successful password login', async () => {
+  it('authenticates valid passwords and resets failed login attempts', async () => {
     const repository = new UserStore(config as never);
     const user = {
       id: '1', email: row.email, passwordHash: await bcrypt.hash(pepperPassword('Passw0rd!'), 4), givenName: 'User',
       surName: 'Example', role: 'RESEARCHER', affiliationId: 'org', languageId: 'en',
-      tokenVersion: 0, acceptedTerms: true, failed_sign_in_attempts: 0,
+      tokenVersion: 0, acceptedTerms: true, locked: false, remainingSignInAttempts: 5,
     };
-    await expect(repository.authenticate('bad-email', 'Passw0rd!')).resolves.toBeUndefined();
-    await expect(repository.authenticate(row.email, 'password')).resolves.toBeUndefined();
-    jest.spyOn(repository, 'findByEmail').mockResolvedValueOnce(undefined);
-    await expect(repository.authenticate(row.email)).resolves.toBeUndefined();
+    await expect(repository.authenticate('bad-email', 'Passw0rd!')).resolves.toMatchObject({ authenticationFailed: true });
+    await expect(repository.authenticate(row.email)).resolves.toMatchObject({ authenticationFailed: true });
     jest.spyOn(repository, 'findByEmail').mockResolvedValueOnce(user);
     queryTable.mockResolvedValueOnce({ results: { affectedRows: 1 }, fields: [] });
-    await expect(repository.authenticate(row.email, 'Passw0rd!')).resolves.toEqual(user);
+    await expect(repository.authenticate(row.email, 'Passw0rd!')).resolves.toMatchObject({
+      id: user.id,
+      remainingSignInAttempts: 5,
+    });
     expect(queryTable).toHaveBeenLastCalledWith(
       expect.anything(),
       expect.stringContaining('failed_sign_in_attempts = 0'),
@@ -203,33 +212,44 @@ describe('UserStore', () => {
     );
   });
 
-  it('increments failed login attempts and locks accounts after five failures', async () => {
+  it('counts every incorrect password and locks the account at the configured threshold', async () => {
     const repository = new UserStore(config as never);
     const user = {
       id: '1', email: row.email, passwordHash: await bcrypt.hash(pepperPassword('Passw0rd!'), 4), givenName: 'User',
       surName: 'Example', role: 'RESEARCHER', affiliationId: 'org', languageId: 'en',
-      tokenVersion: 0, acceptedTerms: true, failed_sign_in_attempts: 0,
+      tokenVersion: 0, acceptedTerms: true, locked: false, remainingSignInAttempts: 5,
     };
     jest.spyOn(repository, 'findByEmail').mockResolvedValueOnce(user);
     queryTable.mockResolvedValueOnce({ results: { affectedRows: 1 }, fields: [] });
 
-    await expect(repository.authenticate(row.email, 'Wrongpass1!')).resolves.toBeUndefined();
+    await expect(repository.authenticate(row.email, 'wrong')).resolves.toMatchObject({
+      authenticationFailed: true,
+      locked: false,
+      remainingSignInAttempts: 4,
+    });
     expect(queryTable).toHaveBeenCalledWith(
       expect.anything(),
       expect.stringContaining('failed_sign_in_attempts = failed_sign_in_attempts + 1'),
       [user.id],
     );
 
-    jest.spyOn(repository, 'findByEmail').mockResolvedValueOnce({ ...user, failed_sign_in_attempts: 4 });
-    queryTable
-      .mockResolvedValueOnce({ results: { affectedRows: 1 }, fields: [] })
-      .mockResolvedValueOnce({ results: { affectedRows: 1 }, fields: [] });
+    jest.spyOn(repository, 'findByEmail').mockResolvedValueOnce({ ...user, remainingSignInAttempts: 1 });
+    queryTable.mockResolvedValueOnce({ results: { affectedRows: 1 }, fields: [] });
 
-    await expect(repository.authenticate(row.email, 'Wrongpass1!')).resolves.toBeUndefined();
-    expect(queryTable.mock.calls.slice(-2)).toEqual([
-      [expect.anything(), expect.stringContaining('failed_sign_in_attempts = failed_sign_in_attempts + 1'), [user.id]],
-      [expect.anything(), expect.stringContaining('SET locked = 1'), [user.id]],
-    ]);
+    await expect(repository.authenticate(row.email, 'Wrongpass1!')).resolves.toMatchObject({
+      authenticationFailed: true,
+      locked: true,
+      remainingSignInAttempts: 0,
+    });
+    expect(queryTable).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.stringContaining('locked = 1'),
+      [user.id],
+    );
+
+    jest.spyOn(repository, 'findByEmail').mockResolvedValueOnce({ ...user, locked: true, remainingSignInAttempts: 0 });
+    await expect(repository.authenticate(row.email, 'Passw0rd!')).resolves.toMatchObject({ locked: true });
+    expect(queryTable).toHaveBeenCalledTimes(2);
   });
 
   it('resets failed login attempts after a successful SSO login', async () => {
@@ -237,7 +257,7 @@ describe('UserStore', () => {
     const user = {
       id: '1', email: row.email, passwordHash: 'hash', givenName: 'User', surName: 'Example',
       role: 'RESEARCHER', affiliationId: 'org', languageId: 'en', tokenVersion: 0,
-      acceptedTerms: true, failed_sign_in_attempts: 3,
+      acceptedTerms: true, locked: false, remainingSignInAttempts: 2,
     };
     jest.spyOn(repository, 'findBySsoId').mockResolvedValueOnce(undefined);
     await expect(repository.ssoLogin('missing')).resolves.toBeUndefined();

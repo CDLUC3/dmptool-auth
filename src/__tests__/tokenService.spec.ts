@@ -34,6 +34,7 @@ const config: Config = {
   helpDeskAddress: 'help@example.test',
   helpPageUrl: 'https://app.example.test/help',
   doNotReplyAddress: 'no-reply@example.test',
+  maxFailedSignInAttempts: 5,
   issuer: 'https://auth.example.test',
   audienceUI: 'https://app.example.test',
   audienceAPI: 'https://api.example.test',
@@ -98,7 +99,8 @@ describe('TokenService', () => {
       languageId: 'en',
       role: 'RESEARCHER',
       acceptedTerms: true,
-      failed_sign_in_attempts: 0
+      locked: false,
+      remainingSignInAttempts: 5
     });
     expect(user).toBeDefined();
     const service = new TokenService(cache, keys, config.ttl.uiAccess, config.ttl.uiRefresh, config.ttl.passwordReset);
@@ -120,9 +122,9 @@ describe('TokenService', () => {
     expect((await jwtVerify(tokens.accessToken, await import('jose').then(({ importJWK }) => importJWK(keys.publicJwks().keys[0]!, 'RS256')))).protectedHeader.alg).toBe('RS256');
     await expect(service.consumeRefreshToken(tokens.refreshToken)).resolves.toMatchObject({ userId: user!.id });
     await expect(service.consumeRefreshToken(tokens.refreshToken)).resolves.toBeUndefined();
-    await expect(service.isRevoked(claims.jti as string)).resolves.toBe(false);
-    await service.revoke(claims.jti as string);
-    await expect(service.isRevoked(claims.jti as string)).resolves.toBe(true);
+    await expect(service.isRevoked(claims.id as string)).resolves.toBe(false);
+    await service.revoke(claims.id as string);
+    await expect(service.isRevoked(claims.id as string)).resolves.toBe(true);
   });
 
   it('uses the configured password reset TTL and lets expired reset tokens disappear naturally', async () => {
@@ -151,7 +153,8 @@ describe('TokenService', () => {
       languageId: 'en',
       role: 'RESEARCHER',
       acceptedTerms: true,
-      failed_sign_in_attempts: 0
+      locked: false,
+      remainingSignInAttempts: 5
     } as PublicUser;
     expect(user).toBeDefined();
 
@@ -174,19 +177,22 @@ describe('TokenService', () => {
       languageId: 'en',
       role: 'RESEARCHER',
       acceptedTerms: true,
-      failed_sign_in_attempts: 0
+      locked: false,
+      remainingSignInAttempts: 5
     } as PublicUser;
     const { accessToken } = await service.issue(config.tokens.validAudiences[0]!, user);
+    const { accessToken: secondAccessToken } = await service.issue(config.tokens.validAudiences[0]!, user);
 
     await expect(service.verifyAccessToken(accessToken)).resolves.toMatchObject({
       id: user.id,
       jti: expect.any(String),
     });
 
-    const { jti } = decodeJwt(accessToken) as { jti: string };
-    await service.revoke(jti);
+    const { id } = decodeJwt(accessToken) as { id: string };
+    await service.revoke(id);
 
     await expect(service.verifyAccessToken(accessToken)).resolves.toBeUndefined();
+    await expect(service.verifyAccessToken(secondAccessToken)).resolves.toBeUndefined();
     await expect(service.verifyAccessToken('not-a-token')).resolves.toBeUndefined();
   });
 

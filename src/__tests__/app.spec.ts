@@ -1,7 +1,7 @@
 import request from 'supertest';
 import { decodeJwt } from 'jose';
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
-import type {Config, OAuthClient} from '../types.js';
+import type { Config, OAuthClient } from '../types.js';
 import type { CacheInterface } from '../cache.js';
 import type { Mail, SMTPSentMessageInfo } from 'nodemailer';
 import { MockMySqlStore } from './mocks/mockMySql.js';
@@ -37,6 +37,7 @@ const buildApp = async (env = 'test') => {
     helpDeskAddress: 'help@example.test',
     helpPageUrl: 'https://app.example.test/help',
     doNotReplyAddress: 'no-reply@example.test',
+    maxFailedSignInAttempts: 5,
     issuer: 'http://auth.example.test',
     audienceUI: 'my-ui',
     audienceAPI: 'my-api',
@@ -204,7 +205,7 @@ describe('authentication routes', () => {
     const csrfToken = csrf.headers['x-csrf-token'] as string;
     await request(app).post('/csrf/verify')
       .set('X-CSRF-Token', csrfToken)
-      .expect(200, { valid: true });
+      .expect(200, { valid: true, message: 'valid CSRF token' });
 
     const signup = await agent.post('/sign-up')
       .set('X-CSRF-Token', csrfToken)
@@ -222,18 +223,20 @@ describe('authentication routes', () => {
     const accessCookie = setCookies(signup).find((value) => value.startsWith('test_access='));
     expect(decodeJwt(accessCookie!.split(';')[0].slice('test_access='.length)).role).toBe('RESEARCHER');
 
+    const refreshCsrf = await agent.get('/csrf').expect(200);
     const refresh = await agent.post('/refresh-token')
-      .set('X-CSRF-Token', signup.headers['x-csrf-token'] as string)
+      .set('X-CSRF-Token', refreshCsrf.headers['x-csrf-token'] as string)
       .expect(200);
     expect(refresh.body.success).toBe(true);
     const refreshedAccessCookie = setCookies(refresh).find((value) => value.startsWith('test_access='));
-    const refreshedJti = decodeJwt(refreshedAccessCookie!.split(';')[0].slice('test_access='.length)).jti as string;
-    await request(app).get(`/revocations/${refreshedJti}`).expect(200, { revoked: false });
+    const refreshedUserId = decodeJwt(refreshedAccessCookie!.split(';')[0].slice('test_access='.length)).id as string;
+    await request(app).get(`/revocations/${refreshedUserId}`).expect(200, { revoked: false });
 
+    const signoutCsrf = await agent.get('/csrf').expect(200);
     await agent.post('/sign-out')
-      .set('X-CSRF-Token', refresh.headers['x-csrf-token'] as string)
+      .set('X-CSRF-Token', signoutCsrf.headers['x-csrf-token'] as string)
       .expect(200);
-    await request(app).get(`/revocations/${refreshedJti}`).expect(200, { revoked: true });
+    await request(app).get(`/revocations/${refreshedUserId}`).expect(200, { revoked: true });
 
     const signinCsrf = await agent.get('/csrf').expect(200);
     const signin = await agent.post('/sign-in')
@@ -251,12 +254,52 @@ describe('authentication routes', () => {
 
     await request(app).post('/csrf/verify')
       .set('X-CSRF-Token', token)
-      .expect(200, { valid: true });
-    await request(app).post('/csrf/verify').expect(200, { valid: false });
+      .expect(200, { valid: true, message: 'valid CSRF token' });
+    await request(app).post('/csrf/verify').expect(200, { valid: false, message: 'Invalid CSRF toke' });
     await request(app).post('/sign-in')
       .set('X-CSRF-Token', token)
       .send({ email: 'nobody@example.test', password: 'Passw0rd!' })
       .expect(401, { success: false, message: 'Invalid credentials' });
+  });
+
+  it('reports remaining password attempts, locks after the threshold, and blocks valid credentials once locked', async () => {
+    const { app } = await buildApp();
+    const agent = request.agent(app);
+    const signupCsrf = await agent.get('/csrf').expect(200);
+    await agent.post('/sign-up')
+      .set('X-CSRF-Token', signupCsrf.headers['x-csrf-token'] as string)
+      .send({
+        email: 'locked@example.test',
+        password: 'Passw0rd!',
+        givenName: 'Locked',
+        surName: 'Account',
+        affiliationId: '',
+        acceptedTerms: 'true',
+      })
+      .expect(201);
+
+    for (const remainingSignInAttempts of [4, 3, 2, 1]) {
+      const csrf = await agent.get('/csrf').expect(200);
+      await agent.post('/sign-in')
+        .set('X-CSRF-Token', csrf.headers['x-csrf-token'] as string)
+        .send({ email: 'locked@example.test', password: 'wrong' })
+        .expect(401, {
+          success: false,
+          message: `Invalid credentials. ${remainingSignInAttempts} remaining attempts before your account is locked.`,
+        });
+    }
+
+    const finalFailureCsrf = await agent.get('/csrf').expect(200);
+    await agent.post('/sign-in')
+      .set('X-CSRF-Token', finalFailureCsrf.headers['x-csrf-token'] as string)
+      .send({ email: 'locked@example.test', password: 'wrong' })
+      .expect(401, { success: false, message: 'Your account has been locked due to too many failed sign in attempts' });
+
+    const lockedLoginCsrf = await agent.get('/csrf').expect(200);
+    await agent.post('/sign-in')
+      .set('X-CSRF-Token', lockedLoginCsrf.headers['x-csrf-token'] as string)
+      .send({ email: 'locked@example.test', password: 'Passw0rd!' })
+      .expect(401, { success: false, message: 'Your account has been locked due to too many failed sign in attempts' });
   });
 
   it('issues one-time password reset tokens and rejects invalid reset attempts', async () => {
@@ -405,7 +448,7 @@ describe('authentication routes', () => {
       currentPassword: 'Passw0rd!',
       newPassword: 'NewPassw0rd!',
       newPasswordConfirmation: 'NewPassw0rd!',
-    }).expect(403, { error: 'Invalid CSRF token' });
+    }).expect(403, { message: 'Invalid CSRF token' });
 
     const missingAccessTokenCsrf = await request(app).get('/csrf').expect(200);
     await request(app).post('/change-password')
@@ -461,7 +504,10 @@ describe('authentication routes', () => {
     await agent.post('/sign-in')
       .set('X-CSRF-Token', signinCsrf.headers['x-csrf-token'] as string)
       .send({ email: 'alice@example.test', password: 'Passw0rd!' })
-      .expect(401, { success: false, message: 'Invalid credentials' });
+      .expect(401, {
+        success: false,
+        message: 'Invalid credentials. 4 remaining attempts before your account is locked.',
+      });
 
     const newPasswordSigninCsrf = await agent.get('/csrf').expect(200);
     await agent.post('/sign-in')
@@ -504,7 +550,7 @@ describe('authentication routes', () => {
     const { app } = await buildApp();
     await request(app).post('/sign-in')
       .send({ email: 'nobody@example.test', password: 'Passw0rd!' })
-      .expect(403, { error: 'Invalid CSRF token' });
+      .expect(403, { message: 'Invalid CSRF token' });
     const csrf = await request(app).get('/csrf').expect(200);
     await request(app).post('/sign-in')
       .set('X-CSRF-Token', csrf.headers['x-csrf-token'] as string)
@@ -610,13 +656,14 @@ describe('authentication routes', () => {
       acceptedTerms: 'true',
     };
     const csrf = await agent.get('/csrf').expect(200);
-    const created = await agent.post('/sign-up')
+    await agent.post('/sign-up')
       .set('X-CSRF-Token', csrf.headers['x-csrf-token'] as string)
       .send(user)
       .expect(201);
 
+    const duplicateSignupCsrf = await agent.get('/csrf').expect(200);
     await agent.post('/sign-up')
-      .set('X-CSRF-Token', created.headers['x-csrf-token'] as string)
+      .set('X-CSRF-Token', duplicateSignupCsrf.headers['x-csrf-token'] as string)
       .send(user)
       .expect(409, { success: false, message: 'A user with this email already exists' });
   });
@@ -817,7 +864,8 @@ describe('authentication routes', () => {
       languageId: 'en-US',
       role: 'RESEARCHER',
       acceptedTerms: true,
-      failed_sign_in_attempts: 0
+      locked: false,
+      remainingSignInAttempts: 0
     });
 
     const invalidClient = await request(app).get('/auth')
@@ -952,25 +1000,25 @@ describe('authentication routes', () => {
 
     await agent.post('/sign-up')
       .send(validSignup)
-      .expect(403, { error: 'Invalid CSRF token' });
+      .expect(403, { message: 'Invalid CSRF token' });
 
     const csrf = await agent.get('/csrf').expect(200, 'ok');
     const csrfToken = csrf.headers['x-csrf-token'] as string;
     expect(csrfToken).toMatch(/^[a-f0-9]{32}$/);
     await expect(cache.get(`auth:csrf:${csrfToken}`)).resolves.toBe('1');
 
-    const missingEmail = await agent.post('/sign-up')
+    await agent.post('/sign-up')
       .set('X-CSRF-Token', csrfToken)
       .send({ ...validSignup, email: undefined })
       .expect(400, { success: false, message: 'email, password, givenName, and surName are required' });
-    const invalidPasswordCsrf = missingEmail.headers['x-csrf-token'] as string;
+    const invalidPasswordCsrf = (await agent.get('/csrf').expect(200)).headers['x-csrf-token'] as string;
     expect(invalidPasswordCsrf).toMatch(/^[a-f0-9]{32}$/);
 
-    const invalidPassword = await agent.post('/sign-up')
+    await agent.post('/sign-up')
       .set('X-CSRF-Token', invalidPasswordCsrf)
       .send({ ...validSignup, password: 'Passw0rd()' })
       .expect(500, { success: false, message: 'Internal server error' });
-    const signupCsrf = invalidPassword.headers['x-csrf-token'] as string;
+    const signupCsrf = (await agent.get('/csrf').expect(200)).headers['x-csrf-token'] as string;
 
     const signup = await agent.post('/sign-up')
       .set('X-CSRF-Token', signupCsrf)
@@ -991,18 +1039,18 @@ describe('authentication routes', () => {
     expect(signupAccessCookie).toBeDefined();
     expect(signupRefreshCookie).toBeDefined();
     await expect(cache.get(`auth:refresh:${signupRefreshCookie}`)).resolves.toBeDefined();
-    const signinCsrf = signup.headers['x-csrf-token'] as string;
-    expect(signinCsrf).toMatch(/^[a-f0-9]{32}$/);
+    const signoutCsrf = (await agent.get('/csrf').expect(200)).headers['x-csrf-token'] as string;
 
     const signout = await agent.post('/sign-out')
-      .set('X-CSRF-Token', signinCsrf)
+      .set('X-CSRF-Token', signoutCsrf)
       .expect(200, {});
     expect(setCookies(signout).join(';')).toContain('test_access=;');
     expect(setCookies(signout).join(';')).toContain('test_refresh=;');
     await expect(cache.get(`auth:refresh:${signupRefreshCookie}`)).resolves.toBeUndefined();
 
+    const signinCsrf = await agent.get('/csrf').expect(200);
     const signin = await agent.post('/sign-in')
-      .set('X-CSRF-Token', signout.headers['x-csrf-token'] as string)
+      .set('X-CSRF-Token', signinCsrf.headers['x-csrf-token'] as string)
       .send({ email: validSignup.email, password: validSignup.password })
       .expect(200, { success: true, message: 'ok' });
     const signinAccessCookie = cookie(signin, 'test_access');
@@ -1010,8 +1058,9 @@ describe('authentication routes', () => {
     expect(signinAccessCookie).toBeDefined();
     expect(signinRefreshCookie).toBeDefined();
 
+    const refreshCsrf = await agent.get('/csrf').expect(200);
     const refresh = await agent.post('/refresh-token')
-      .set('X-CSRF-Token', signin.headers['x-csrf-token'] as string)
+      .set('X-CSRF-Token', refreshCsrf.headers['x-csrf-token'] as string)
       .expect(200, { success: true, message: 'ok' });
     const refreshedAccessCookie = cookie(refresh, 'test_access');
     const refreshedRefreshCookie = cookie(refresh, 'test_refresh');
@@ -1020,13 +1069,15 @@ describe('authentication routes', () => {
     await expect(cache.get(`auth:refresh:${signinRefreshCookie}`)).resolves.toBeUndefined();
     await expect(cache.get(`auth:refresh:${refreshedRefreshCookie}`)).resolves.toBeDefined();
 
-    const revoke = await agent.post('/sign-out')
-      .set('X-CSRF-Token', refresh.headers['x-csrf-token'] as string)
+    const revokeCsrf = await agent.get('/csrf').expect(200);
+    await agent.post('/sign-out')
+      .set('X-CSRF-Token', revokeCsrf.headers['x-csrf-token'] as string)
       .expect(200, {});
     await expect(cache.get(`auth:refresh:${refreshedRefreshCookie}`)).resolves.toBeUndefined();
 
+    const expiredRefreshCsrf = await agent.get('/csrf').expect(200);
     await agent.post('/refresh-token')
-      .set('X-CSRF-Token', revoke.headers['x-csrf-token'] as string)
+      .set('X-CSRF-Token', expiredRefreshCsrf.headers['x-csrf-token'] as string)
       .set('Cookie', `test_refresh=${refreshedRefreshCookie}`)
       .expect(401, { success: false, message: 'Refresh token has expired' });
   });

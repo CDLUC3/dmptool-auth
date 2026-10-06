@@ -16,6 +16,10 @@ const userEmailsTable: string = process.env.DB_USER_EMAILS_TABLE || 'user_emails
 const templateCollaboratorsTable: string = process.env.DB_TEMPLATE_COLLABORATORS_TABLE || 'template_collaborators';
 const projectCollaboratorsTable: string = process.env.DB_PROJECT_COLLABORATORS_TABLE || 'project_collaborators';
 
+type AuthenticationAttempt = PublicUser & {
+  authenticationFailed?: true;
+};
+
 /**
  * Converts a User object to a PublicUser object by omitting the passwordHash field.
  *
@@ -33,16 +37,21 @@ const publicUser = (user: User): PublicUser => ({
   tokenVersion: user.tokenVersion,
   ssoId: user.ssoId,
   acceptedTerms: user.acceptedTerms,
-  failed_sign_in_attempts: user.failed_sign_in_attempts,
+  locked: user.locked,
+  remainingSignInAttempts: user.remainingSignInAttempts,
 });
 
 /**
  * Converts a database row to a User object.
  *
+ * @param maxSigninAttempts The maximum number of allowed sign-in attempts for a user.
  * @param row The database row to convert.
  * @returns A User object.
  */
-const toUser = (row: UserRow): User => ({
+const toUser = (
+  maxSigninAttempts: number,
+  row: UserRow
+): User => ({
   id: String(row.id),
   email: row.email,
   passwordHash: row.password,
@@ -54,7 +63,10 @@ const toUser = (row: UserRow): User => ({
   tokenVersion: row.tokenVersion ?? 0,
   ssoId: row.ssoId ?? undefined,
   acceptedTerms: true,
-  failed_sign_in_attempts: row.failed_sign_in_attempts ?? 0,
+  locked: row.locked ?? false,
+  remainingSignInAttempts: row.locked
+    ? 0
+    : calculateRemainingSignInAttempts(row.failed_sign_in_attempts ?? 0, maxSigninAttempts) ?? 0,
 });
 
 /**
@@ -109,7 +121,22 @@ const isUserRow = (row: Record<string, unknown>): row is UserRow =>
   && isNullableString(row.surName)
   && isNullableString(row.affiliationId)
   && isNullableString(row.languageId)
-  && isNullableString(row.ssoId);
+  && isNullableString(row.ssoId)
+  && typeof row.locked === 'number'
+  && (typeof row.failed_sign_in_attempts === 'number' || row.failed_sign_in_attempts === null);
+
+/**
+ * Calculates the remaining sign-in attempts for a user based on the number of failed sign-in
+ * attempts and the maximum allowed attempts.
+ *
+ * @param failedSignInAttempts The number of failed sign-in attempts for the user.
+ * @param maxAttempts The maximum number of allowed sign-in attempts (default is 5).
+ * @returns The number of remaining sign-in attempts for the user.
+ */
+const calculateRemainingSignInAttempts = (
+  failedSignInAttempts: number,
+  maxAttempts = 5,
+): number => Math.max(0, maxAttempts - failedSignInAttempts);
 
 /**
  * Manages DMPTool user accounts stored in the `users` and `userEmails` tables.
@@ -225,50 +252,63 @@ export class UserStore {
    * Authenticates a user by their email and password.
    * If the email and password are valid, updates the user's last sign-in timestamp and returns
    * the public user object.
-   * If the email or password are invalid, returns undefined.
+   * If the email or password are invalid, returns an authentication failure result.
    *
    * @param email The email address of the user to authenticate.
    * @param password The password of the user to authenticate.
-   * @returns A Promise that resolves to the public user object if authentication is successful, or undefined if not.
+   * @returns A Promise that resolves to the public user object or an authentication failure result.
    */
-  async authenticate(email: string, password?: string): Promise<PublicUser | undefined> {
-    // Validate the email and password are valid. If not, return undefined.
-    if (!emailPattern.test(normalizeEmail(email)) || (password && !isValidPassword(password))) return undefined;
-
-    const user: User | undefined = await this.findByEmail(email);
-    if (!user) return undefined;
-
-    // If a password was supplied, and it did not match the stored password, return undefined
-    const passwordHash: string = this.getPepperedPassword(password || '');
-    if ((password && !(await bcrypt.compare(passwordHash, user.passwordHash)))) {
-      // Increment the failed login attempts for the user.
-      if (user) {
-        await queryTable(
-            { ...this.config.database, logger: this.config.logger },
-            `UPDATE ${usersTable} SET failed_sign_in_attempts = failed_sign_in_attempts + 1 WHERE id = ?`,
-            [user.id],
-        );
-
-        // If it has reached 5, lock the account.
-        const newAttempts = (user.failed_sign_in_attempts || 0) + 1;
-        if (newAttempts >= 5) {
-          await queryTable(
-              { ...this.config.database, logger: this.config.logger },
-              `UPDATE ${usersTable} SET locked = 1 WHERE id = ?`,
-              [user.id],
-          );
-        }
-      }
-      return undefined;
+  async authenticate(
+    email: string,
+    password?: string
+  ): Promise<AuthenticationAttempt> {
+    // Normalize and validate the email and password
+    if (!emailPattern.test(normalizeEmail(email)) || !password) {
+      return { authenticationFailed: true } as AuthenticationAttempt;
     }
 
-    // Update the last sign-in timestamp and method for the user
-    await queryTable(
+    // Look up the user by email
+    const user: User | undefined = await this.findByEmail(email);
+    if (!user) return { authenticationFailed: true } as AuthenticationAttempt;
+
+    // If the user is locked, return the public user object without checking the password
+    if (user.locked) return publicUser(user);
+
+    // Compare the provided password with the stored password hash
+    const passwordHash: string = this.getPepperedPassword(password);
+    if (!(await bcrypt.compare(passwordHash, user.passwordHash))) {
+      const failedSignInAttempts: number = this.config.maxFailedSignInAttempts - user.remainingSignInAttempts + 1;
+      const locked: boolean = failedSignInAttempts >= this.config.maxFailedSignInAttempts;
+
+      await queryTable(
         { ...this.config.database, logger: this.config.logger },
-        `UPDATE ${usersTable} SET failed_sign_in_attempts = 0, last_sign_in = CURRENT_TIMESTAMP, last_sign_in_via = ? WHERE id = ?`,
-        ['PASSWORD', user.id],
+        `UPDATE ${usersTable}
+         SET failed_sign_in_attempts = failed_sign_in_attempts + 1${locked ? ', locked = 1' : ''}
+         WHERE id = ?`,
+        [user.id],
+      );
+      return {
+        ...publicUser(user),
+        locked,
+        remainingSignInAttempts: calculateRemainingSignInAttempts(
+          failedSignInAttempts,
+          this.config.maxFailedSignInAttempts,
+        ),
+        authenticationFailed: true,
+      };
+    }
+
+    await queryTable(
+      { ...this.config.database, logger: this.config.logger },
+      `UPDATE ${usersTable}
+       SET failed_sign_in_attempts = 0, last_sign_in = CURRENT_TIMESTAMP, last_sign_in_via = ?
+       WHERE id = ?`,
+      ['PASSWORD', user.id],
     );
-    return user;
+    return {
+      ...publicUser(user),
+      remainingSignInAttempts: this.config.maxFailedSignInAttempts,
+    };
   }
 
   /**
@@ -285,7 +325,8 @@ export class UserStore {
     const passwordHash: string = await this.hashPassword(password);
     const response: dbQueryResponse = await queryTable(
         { ...this.config.database, logger: this.config.logger },
-        `UPDATE ${usersTable} SET password = ?, tokenVersion = tokenVersion + 1 WHERE id = ? AND active = 1 AND locked = 0`,
+        `UPDATE ${usersTable} SET password = ?, tokenVersion = tokenVersion + 1
+        WHERE id = ? AND active = 1 AND locked = 0`,
         [passwordHash, id],
     );
     return Boolean(response.results && !Array.isArray(response.results)
@@ -325,12 +366,16 @@ export class UserStore {
     const user: PublicUser | undefined = await this.findBySsoId(ssoId);
     if (!user) return undefined;
 
-    // Update the last sign-in timestamp and method for the user
-    await queryTable(
-        { ...this.config.database, logger: this.config.logger },
-        `UPDATE ${usersTable} SET failed_sign_in_attempts = 0, last_sign_in = CURRENT_TIMESTAMP, last_sign_in_via = ? WHERE id = ?`,
-        ['SSO', user.id],
-    );
+    // Update the last sign-in timestamp and method for the user if their account is not locked
+    if (!user.locked) {
+      await queryTable(
+          {...this.config.database, logger: this.config.logger},
+          `UPDATE ${usersTable} SET failed_sign_in_attempts = 0, last_sign_in = CURRENT_TIMESTAMP,
+             last_sign_in_via = ?
+           WHERE id = ?`,
+          ['SSO', user.id],
+      );
+    }
     return user;
   }
 
@@ -342,7 +387,8 @@ export class UserStore {
    */
   async findById(id: string): Promise<PublicUser | undefined> {
     const user: User | undefined = await this.findRaw(
-      `SELECT u.id, u.password, u.role, u.givenName, u.surName, u.affiliationId, u.languageId, u.ssoId, u.tokenVersion, ue.email, u.failed_sign_in_attempts
+      `SELECT u.id, u.password, u.role, u.givenName, u.surName, u.affiliationId, u.languageId,
+         u.ssoId, u.tokenVersion, ue.email, u.locked, u.failed_sign_in_attempts
        FROM ${usersTable} u JOIN ${userEmailsTable} ue ON ue.userId = u.id AND ue.isPrimary = 1
        WHERE u.id = ? AND u.active = 1 AND u.locked = 0 LIMIT 1`,
       [id],
@@ -358,10 +404,11 @@ export class UserStore {
    */
   async findByEmail(email: string): Promise<User | undefined> {
     return this.findRaw(
-      `SELECT u.id, u.password, u.role, u.givenName, u.surName, u.affiliationId, u.languageId, u.ssoId, u.tokenVersion, ue.email, u.failed_sign_in_attempts
+      `SELECT u.id, u.password, u.role, u.givenName, u.surName, u.affiliationId, u.languageId,
+         u.ssoId, u.tokenVersion, ue.email, u.locked, u.failed_sign_in_attempts
        FROM ${usersTable} u JOIN ${userEmailsTable} ue ON ue.userId = u.id
        WHERE LOWER(ue.email) = ? AND (ue.isPrimary = 1 OR ue.isConfirmed = 1)
-         AND u.active = 1 AND u.locked = 0 LIMIT 1`,
+         AND u.active = 1 LIMIT 1`,
       [normalizeEmail(email)],
     );
   }
@@ -374,9 +421,10 @@ export class UserStore {
    */
   async findBySsoId(ssoId: string): Promise<PublicUser | undefined> {
     const user: User | undefined = await this.findRaw(
-      `SELECT u.id, u.password, u.role, u.givenName, u.surName, u.affiliationId, u.languageId, u.ssoId, u.tokenVersion, ue.email, u.failed_sign_in_attempts
+      `SELECT u.id, u.password, u.role, u.givenName, u.surName, u.affiliationId, u.languageId,
+         u.ssoId, u.tokenVersion, ue.email, u.locked, u.failed_sign_in_attempts
        FROM ${usersTable} u JOIN ${userEmailsTable} ue ON ue.userId = u.id AND ue.isPrimary = 1 
-       WHERE u.ssoId = ? AND u.active = 1 AND u.locked = 0 LIMIT 1`,
+       WHERE u.ssoId = ? AND u.active = 1 LIMIT 1`,
       [ssoId],
     );
     return user ? publicUser(user) : undefined;
@@ -399,7 +447,7 @@ export class UserStore {
     const results: unknown[] = Array.isArray(rows) ? rows : Array.isArray(rows.results) ? rows.results : [];
     if (results[0]) {
       const isUser: boolean = isUserRow(results[0] as UserRow);
-      return isUser ? toUser(results[0] as UserRow) : undefined;
+      return isUser ? toUser(this.config.maxFailedSignInAttempts, results[0] as UserRow) : undefined;
     }
     return undefined;
   }
