@@ -53,5 +53,8 @@
     "ts-jest": "^29.4.5",
     "tsx": "^4.21.0",
     "typescript": "npm:@typescript/typescript6@^6.0.2"
+  },
+  "overrides": {
+    "argparse": "3.0.2"
   }
 }
