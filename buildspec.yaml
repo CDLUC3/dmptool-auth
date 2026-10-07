@@ -1,0 +1,73 @@
+# Build specifications for AWS CodeBuild
+#   See: https://docs.aws.amazon.com/codebuild/latest/userguide/build-spec-ref.html
+
+# Each input artifact is extracted to its own directory by CodePipeline, the locations of which
+# are stored in environment variables. The directory for the primary source artifact (this repo)
+# is made available with $CODEBUILD_SRC_DIR. The directory for the DMPTool push artifacts is
+# made available with $CODEBUILD_SRC_DIR_dmptool-commit.
+# Do not change version. This is the version of aws buildspec, not the version of your buldspec file.
+version: 0.2
+
+phases:
+  install:
+    runtime-versions:
+      nodejs: 22
+  pre_build:
+    commands:
+      # Set some ENV variables here because CF only allows a limit of 1000 characters in the
+      # EnvironmentVariable config for the Pipeline action :(
+      - export AWS_VERSION=$(aws --version)
+
+      - REGISTRY=$(echo $ECR_REPOSITORY_URI | cut -d'/' -f1)
+      - aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $REGISTRY
+
+      # Set the image tag to the Git commit ID if it exists, otherwise use the default value
+      - IMAGE_TAG=${CODEBUILD_RESOLVED_SOURCE_VERSION:-latest}
+      - IMAGE_TAG=${IMAGE_TAG:0:7}
+      - echo "Building with tag - ${IMAGE_TAG}"
+  build:
+    commands:
+      - echo "Running in ${NODE_ENV} - started on `date`"
+      - cd $CODEBUILD_SRC_DIR
+
+      # Ensure we're running in CI mode nd that it always installs the devDependencies for our tests
+      - CI=true
+      - echo "production=false" >> .npmrc
+
+      # CI deletes the node_modules folder and installs the dependencies as defined in package-lock.json
+      - echo "Installing dependencies..."
+      - npm ci
+
+      # Run NPM audit to check for vulnerabilities in the prod dependencies
+      - echo "Running NPM audit..."
+      - npm audit --omit=dev --audit-level=high
+
+      # Run the linter checks
+      - echo "Running linter checks"
+      - npm run lint
+
+      # Run the tests
+      - echo "Running tests"
+      - npm run test-no-db
+
+      # The code is good, so build the Docker image
+      - echo "Building the Docker image..."
+      - docker build -f Dockerfile.aws -t $ECR_REPOSITORY_URI:$IMAGE_TAG .
+
+  post_build:
+    commands:
+      # Push the Docker image to the ECR repository. Fargate will pick it up an deploy automatically
+      - echo Build completed on `date`
+      - echo Pushing the Docker images...
+      - cd $CODEBUILD_SRC_DIR
+      - docker push $ECR_REPOSITORY_URI:$IMAGE_TAG
+
+      - echo Writing image definitions file...
+      - printf '[{"name":"%s","imageUri":"%s"}]' $TASK_DEFINITION_CONTAINER_NAME $ECR_REPOSITORY_URI:$IMAGE_TAG > imagedefinitions.json
+
+      - echo Writing environment variables for Shibboleth CodeBuild to source from
+      - echo "export BASE_IMAGE=$ECR_REPOSITORY_URI:$IMAGE_TAG" > build.env
+artifacts:
+  files:
+    - imagedefinitions.json
+    - build.env

@@ -35,15 +35,6 @@ COPY . .
 # Build the application
 RUN npm run build
 
-# Prune node_modules to only production-ready ones AFTER build
-# RUN npm ci --omit=dev \
-#     && npm cache clean --force \
-#     # Verify jest/babel are gone before runner copies this
-#     && ls node_modules | grep -v "jest\|babel\|typescript\|eslint" > /dev/null \
-#     # We don't need the package files now that the code is compiled and it just messes
-#     # up the Trivy scans
-#     && rm package-lock.json && rm package.json
-
 # Remove all test and mock files from the distribution
 RUN rm -rf dist/__tests__ \
            dist/__mocks__ \
