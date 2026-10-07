@@ -31,7 +31,6 @@ phases:
       - cd $CODEBUILD_SRC_DIR
 
       # Ensure we're running in CI mode nd that it always installs the devDependencies for our tests
-      - CI=true
       - echo "production=false" >> .npmrc
 
       # CI deletes the node_modules folder and installs the dependencies as defined in package-lock.json
