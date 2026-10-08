@@ -151,8 +151,8 @@ export const createApp = (
         if (!origin) return callback(null, true);
 
         const allowedOrigins = [
-          `http://${process.env.domain}`,
-          `https://${process.env.domain}`,
+          `http://${process.env.DOMAIN}`,
+          `https://${process.env.DOMAIN}`,
         ];
 
         if (allowedOrigins.includes(origin) || ['development', 'test'].includes(config.env)) {
@@ -326,7 +326,7 @@ export const createApp = (
         const generalError: string | undefined = user.errors?.general;
         const status: number = generalError === 'A user with this email already exists'
           ? 409 : generalError === undefined ? 400 : 500;
-        
+
         response.status(status).json({
           success: false,
           message: (user.errors || {})['general'] || 'Unable to create your account.',
