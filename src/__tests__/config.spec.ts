@@ -116,7 +116,7 @@ describe('loadConfig', () => {
 
   it('rejects configuration when the database password is unavailable', async () => {
     delete process.env.RDS_PASSWORD;
-    getSSMParameter.mockImplementation(async (_config, name) => name === 'SesAccessKey' || name === 'SesAccessSecret'
+    getSSMParameter.mockImplementation(async (_config, name) => name === 'SesAccessKeyId' || name === 'SesAccessSecret'
       ? 'credential'
       : name === 'RdsUsername' ? 'auth' : undefined);
 
@@ -129,9 +129,9 @@ describe('loadConfig', () => {
     getSSMParameter.mockResolvedValue(undefined);
 
     await expect(loadConfig(logger)).rejects.toThrow('Failed to get SES configuration');
-    expect(logger.fatal).toHaveBeenCalledWith('Missing SesAccessKey in SSM Parameter Store!');
+    expect(logger.fatal).toHaveBeenCalledWith('Missing SesAccessKeyId in SSM Parameter Store!');
 
-    getSSMParameter.mockImplementation(async (_config, name) => name === 'SesAccessKey' ? 'credential' : undefined);
+    getSSMParameter.mockImplementation(async (_config, name) => name === 'SesAccessKeyId' ? 'credential' : undefined);
     await expect(loadConfig(logger)).rejects.toThrow('Failed to get SES configuration');
     expect(logger.fatal).toHaveBeenCalledWith('Missing SesAccessSecret in SSM Parameter Store!');
   });

@@ -32,11 +32,11 @@ const getSESConfig = async (
     env: EnvironmentEnum = EnvironmentEnum.DEV
 ): Promise<SesConnectionParams | undefined> => {
   const inDevMode: boolean = ['development', 'test'].includes(process.env.NODE_ENV || 'development');
-  const sesAccessKey: string | undefined = inDevMode ? 'DUMMY_KEY' : await getSSMParameter(ssmConfig, 'SesAccessKey', env);
+  const sesAccessKey: string | undefined = inDevMode ? 'DUMMY_KEY' : await getSSMParameter(ssmConfig, 'SesAccessKeyId', env);
   const sesAccessSecret: string | undefined = inDevMode ? 'DUMMY_SECRET' : await getSSMParameter(ssmConfig, 'SesAccessSecret', env);
 
   if (!sesAccessKey) {
-    ssmConfig.logger.fatal('Missing SesAccessKey in SSM Parameter Store!');
+    ssmConfig.logger.fatal('Missing SesAccessKeyId in SSM Parameter Store!');
     return undefined;
   }
   if (!sesAccessSecret) {
