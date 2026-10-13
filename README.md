@@ -45,7 +45,7 @@ All routes are rooted at `ISSUER`. Routes marked **CSRF** require a valid `X-CSR
 | --- | --- | --- |
 | `GET`, `OPTIONS` | `/.well-known/openid-configuration` | OIDC discovery metadata. |
 | `GET`, `OPTIONS` | `/.well-known/oauth-authorization-server` | OAuth 2.0 authorization-server metadata. |
-| `GET` | `/jwks` | Public JSON Web Key Set. |
+| `GET` | `/.well-known/jwks` | Public JSON Web Key Set. |
 | `GET` | `/auth` | Starts an authorization request. |
 | `GET` | `/auth/:uid` | Resumes an authorization request after an interaction completes. |
 | `POST` | `/token` | Exchanges an authorization code or refresh token. |
