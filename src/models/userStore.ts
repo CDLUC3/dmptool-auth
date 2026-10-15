@@ -451,14 +451,20 @@ export class UserStore {
    * @returns A Promise that resolves to the SSO entity ID if found, otherwise undefined.
    */
   async findSsoEntityId(email: string): Promise<string | undefined> {
-    if (!email || !email.includes('@')) return undefined;
+    if (!emailPattern.test(email)) return undefined;
 
+    const emailParts: string[] = email.trim().split('@');
+    if (emailParts.length <= 1) return undefined;
+
+    const domain: string = emailParts[emailParts.length - 1]?.trim()?.toLowerCase();
+    if (!domain) return undefined;
+    
     const ssoEntityRows : dbQueryResponse = await queryTable(
       { ...this.config.database, logger: this.config.logger },
       `SELECT aed.affiliationId, a.ssoEntityId
        FROM affiliationEmailDomains AS aed JOIN affiliations AS a ON aed.affiliationId = a.uri
        WHERE a.ssoEntityId IS NOT NULL AND TRIM(a.ssoEntityId) != '' AND aed.emailDomain = ? LIMIT 1;`,
-      [email.split('@')[1]],
+      [domain],
     );
     if (!ssoEntityRows.results || !Array.isArray(ssoEntityRows.results)) return undefined;
 
