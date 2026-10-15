@@ -2,7 +2,7 @@ import type { ResultSetHeader } from "mysql2";
 import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { queryTable } from '@dmptool/utils';
-import type { Config, dbQueryResponse, PublicUser, User, UserRow } from '../types.js';
+import type {Config, dbQueryResponse, PublicUser, SsoEntityRow, User, UserRow} from '../types.js';
 
 const passwordSpecialCharacters = /[`!@#$%^&*_+\-=?~\s]/;
 const disallowedPasswordCharacters = /[(){}[\]|\\:;"'<>,./]/;
@@ -442,6 +442,28 @@ export class UserStore {
       [ssoId],
     );
     return user ? publicUser(user) : undefined;
+  }
+
+  /**
+   * Finds the SSO entity ID associated with the email domain of the provided email address.
+   *
+   * @param email The email address to check for an associated SSO entity ID.
+   * @returns A Promise that resolves to the SSO entity ID if found, otherwise undefined.
+   */
+  async findSsoEntityId(email: string): Promise<string | undefined> {
+    if (!email || !email.includes('@')) return undefined;
+
+    const ssoEntityRows : dbQueryResponse = await queryTable(
+      { ...this.config.database, logger: this.config.logger },
+      `SELECT aed.affiliationId, a.ssoEntityId
+       FROM affiliationEmailDomains AS aed JOIN affiliations AS a ON aed.affiliationId = a.uri
+       WHERE a.ssoEntityId IS NOT NULL AND TRIM(a.ssoEntityId) != '' AND aed.emailDomain = ? LIMIT 1;`,
+      [email.split('@')[1]],
+    );
+    if (!ssoEntityRows.results || !Array.isArray(ssoEntityRows.results)) return undefined;
+
+    const ssoEntityRow = ssoEntityRows.results[0] as SsoEntityRow | undefined;
+    return ssoEntityRow ? ssoEntityRow.ssoEntityId : undefined;
   }
 
   /**

@@ -176,6 +176,34 @@ describe('UserStore', () => {
     await expect(repository.findById('1')).resolves.toMatchObject({ id: '1' });
   });
 
+  it('finds the SSO entity ID for an email domain', async () => {
+    const repository = new UserStore(config as never);
+    queryTable.mockResolvedValueOnce({
+      results: [{ affiliationId: 'https://ror.org/example', ssoEntityId: 'https://idp.example.test' }],
+      fields: [],
+    });
+
+    await expect(repository.findSsoEntityId('user@example.test')).resolves.toBe('https://idp.example.test');
+    expect(queryTable).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.stringContaining('FROM affiliationEmailDomains AS aed JOIN affiliations AS a'),
+      ['example.test'],
+    );
+  });
+
+  it.each([
+    ['invalid email', 'invalid-email', undefined],
+    ['missing SSO entity', 'user@example.test', { results: [], fields: [] }],
+    ['unexpected query result', 'user@example.test', { results: { affectedRows: 0 }, fields: [] }],
+  ])('returns undefined for a %s', async (_, email, queryResult) => {
+    const repository = new UserStore(config as never);
+    if (queryResult) queryTable.mockResolvedValueOnce(queryResult);
+
+    await expect(repository.findSsoEntityId(email)).resolves.toBeUndefined();
+    if (queryResult) expect(queryTable).toHaveBeenCalledWith(expect.anything(), expect.any(String), ['example.test']);
+    else expect(queryTable).not.toHaveBeenCalled();
+  });
+
   it.each([
     [{ ...row, id: false }],
     [{ ...row, id: 1, email: 4 }],
