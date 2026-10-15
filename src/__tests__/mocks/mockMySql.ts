@@ -65,6 +65,7 @@ export class MockMySqlStore {
   private readonly authKeys = new Map<string, string>();
   private readonly oidcRecords = new Map<string, OidcRecord>();
   private readonly oauthClients = new Map<string, ClientRecord>();
+  private readonly ssoEntityIdsByEmailDomain = new Map<string, string>();
 
   async query(_config: unknown, statement: string, values: unknown[] = []): Promise<unknown> {
     const sql = statement.replace(/\s+/g, ' ').trim();
@@ -103,6 +104,11 @@ export class MockMySqlStore {
       if (!user) return result(0);
       user.email = String(values[1]);
       return result(1, user.id);
+    }
+    if (sql.startsWith('SELECT aed.affiliationId, a.ssoEntityId FROM affiliationEmailDomains AS aed')) {
+      const emailDomain = String(values[0]).toLowerCase();
+      const ssoEntityId = this.ssoEntityIdsByEmailDomain.get(emailDomain);
+      return { results: ssoEntityId ? [{ affiliationId: 'affiliation-1', ssoEntityId }] : [], fields: [] };
     }
     if (sql.startsWith('SELECT u.id, u.password') && sql.includes('WHERE u.id = ?')) {
       return this.userRows((user) => user.id === Number(values[0]));
@@ -219,6 +225,10 @@ export class MockMySqlStore {
   setOauthClientActive(clientId: string, active: boolean): void {
     const record = this.oauthClients.get(clientId);
     if (record) record.active = active;
+  }
+
+  setSsoEntityIdForEmailDomain(emailDomain: string, ssoEntityId: string): void {
+    this.ssoEntityIdsByEmailDomain.set(emailDomain.toLowerCase(), ssoEntityId);
   }
 
   private userRows(predicate: (user: UserRecord) => boolean): UserRecord[] {

@@ -33,6 +33,7 @@ All routes are rooted at `ISSUER`. Routes marked **CSRF** require a valid `X-CSR
 | `POST` | `/password-reset` | Consumes `token`, `password`, and `passwordConfirmation` to reset a password. |
 | `POST` | `/change-password` **CSRF** | Requires a valid access-token cookie; verifies `currentPassword` and applies `newPassword` and `newPasswordConfirmation`. |
 | `GET` | `/revocations/:jti` | Reports whether an access-token JTI has been revoked. |
+| `GET`, `POST` | `/sso-check` | Looks up the email domain's configured SSO entity ID. Returns the email and entity ID when SSO is available, or `404` when it is not. |
 | `GET`, `POST` | `/sso`, `/sso/passthru` | Requires `email` and `entityId`; redirects the browser to the local Shibboleth SP login endpoint. |
 | `GET`, `POST` | `/sso/callback`, `/sso/callback/:id` | Accepts only requests from the trusted Shibboleth proxy. Existing users receive browser auth cookies; new users receive a short-lived SSO handoff cookie and are redirected to `/signup`. |
 | `GET` | `/interaction/:uid` | Returns the pending OIDC interaction's UID, prompt, client ID, and parameters. |
@@ -65,6 +66,7 @@ flowchart TB
     Browser -->|POST /sign-up, /sign-in, /refresh-token, /sign-out| Auth
     Browser -->|POST /password-reset/token, /password-reset, /change-password| Auth
     Browser -->|GET /revocations/:jti, GET /jwks.json| Auth
+    Browser -->|GET or POST /sso-check| Auth
     Browser -->|GET or POST /sso, /sso/passthru| Auth
     Auth -->|/Shibboleth.sso/Login| SP
     SP <--> IdP
@@ -130,6 +132,9 @@ sequenceDiagram
         Browser->>Auth: POST /sign-up or /sign-in + X-CSRF-Token
         Auth->>MySQL: Create user or verify password
     else Institutional SSO
+        Browser->>Auth: GET or POST /sso-check (email)
+        Auth->>MySQL: Look up SSO entity ID for email domain
+        Auth-->>Browser: SSO entity ID or not found
         Browser->>Auth: GET or POST /sso (email, entityId)
         Auth-->>SP: Redirect to /Shibboleth.sso/Login
         SP->>IdP: SAML authentication request

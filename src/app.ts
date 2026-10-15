@@ -601,6 +601,35 @@ export const createApp = (
   });
 
   /**
+   * Check if an email address is associated with an SSO entity.
+   *
+   * @route GET /sso-check
+   * @param request The Express request object
+   * @param response The Express response object
+   * @param next The next middleware function in the stack
+   * @returns A JSON response indicating whether the email is associated with an SSO entity and the corresponding entityId
+   */
+  app.all('/sso-check', nocache, async (request: Request, response: Response): Promise<void> => {
+    const values: unknown = request.method === 'GET' ? request.query : request.body;
+    const { email } = values as Record<string, string>;
+    if (!email || !email.includes('@')) {
+      config.logger.warn({ email }, 'SSO Check - invalid email');
+      response.status(400).json({ success: false, message: 'Invalid email address' });
+      return;
+    }
+
+    const entityId = await users.findSsoEntityId(email);
+    if (!entityId) {
+      config.logger.warn({ email }, 'SSO Check - no entityId found for email');
+      response.status(404).json({ success: false, message: 'No SSO entityId found for this email' });
+      return;
+    }
+
+    config.logger.debug({ email, entityId }, 'SSO Check - entityId found');
+    response.status(200).json({ success: true, email, entityId });
+  });
+
+  /**
    * Endpoint for handling SSO login.
    *
    * @route POST /sso
