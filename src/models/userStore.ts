@@ -458,7 +458,7 @@ export class UserStore {
 
     const domain: string = emailParts[emailParts.length - 1]?.trim()?.toLowerCase();
     if (!domain) return undefined;
-    
+
     const ssoEntityRows : dbQueryResponse = await queryTable(
       { ...this.config.database, logger: this.config.logger },
       `SELECT aed.affiliationId, a.ssoEntityId
