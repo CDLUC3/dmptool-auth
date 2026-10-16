@@ -448,9 +448,11 @@ export class UserStore {
    * Finds the SSO entity ID associated with the email domain of the provided email address.
    *
    * @param email The email address to check for an associated SSO entity ID.
-   * @returns A Promise that resolves to the SSO entity ID if found, otherwise undefined.
+   * @returns A Promise that resolves to the SSO entity ID and display name if found, otherwise undefined.
    */
-  async findSsoEntityId(email: string): Promise<string | undefined> {
+  async findSsoEntityIdByEmail(
+    email: string,
+  ): Promise<SsoEntityRow | undefined> {
     if (!emailPattern.test(email)) return undefined;
 
     const emailParts: string[] = email.trim().split('@');
@@ -461,7 +463,7 @@ export class UserStore {
 
     const ssoEntityRows : dbQueryResponse = await queryTable(
       { ...this.config.database, logger: this.config.logger },
-      `SELECT aed.affiliationId, a.ssoEntityId
+      `SELECT aed.affiliationId, a.displayName, a.ssoEntityId
        FROM affiliationEmailDomains AS aed JOIN affiliations AS a ON aed.affiliationId = a.uri
        WHERE a.ssoEntityId IS NOT NULL AND TRIM(a.ssoEntityId) != '' AND aed.emailDomain = ? LIMIT 1;`,
       [domain],
@@ -469,7 +471,28 @@ export class UserStore {
     if (!ssoEntityRows.results || !Array.isArray(ssoEntityRows.results)) return undefined;
 
     const ssoEntityRow = ssoEntityRows.results[0] as SsoEntityRow | undefined;
-    return ssoEntityRow ? ssoEntityRow.ssoEntityId : undefined;
+    return ssoEntityRow || undefined;
+  }
+
+  /**
+   * Finds the Affiliation associated with the entityId.
+   *
+   * @param entityId The SSO entity ID to check for an associated Affiliation.
+   * @returns A Promise that resolves to the SSO entity ID and display name if found, otherwise undefined.
+   */
+  async findSsoEntityIdById(
+      entityId: string,
+  ): Promise<SsoEntityRow | undefined> {
+    const ssoEntityRows : dbQueryResponse = await queryTable(
+      { ...this.config.database, logger: this.config.logger },
+      `SELECT a.uri as affiliationId, a.displayName, a.ssoEntityId
+      FROM affiliations AS a WHERE a.ssoEntityId = ? LIMIT 1;`,
+      [entityId],
+    );
+    if (!ssoEntityRows.results || !Array.isArray(ssoEntityRows.results)) return undefined;
+
+    const ssoEntityRow = ssoEntityRows.results[0] as SsoEntityRow | undefined;
+    return ssoEntityRow || undefined;
   }
 
   /**

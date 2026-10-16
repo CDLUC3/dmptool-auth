@@ -6,8 +6,8 @@ import express, { type Express, type NextFunction, type Request, type Response }
 import type { Grant, Interaction, Provider, UnknownObject } from 'oidc-provider';
 import type { CacheInterface } from './cache.js';
 import type { AuthTokens, TokenService } from './tokenService.js';
-import type { Config, PublicUser, RefreshTokenData, ShibbolethAssertion } from './types.js';
-import type {SignupAttempt, UserStore} from './models/userStore.js';
+import type { Config, PublicUser, RefreshTokenData, ShibbolethAssertion, SsoEntityRow } from './types.js';
+import type { SignupAttempt, UserStore } from './models/userStore.js';
 import type { KeyStore } from './models/keyStore.js';
 import type { Mail, SMTPSentMessageInfo } from "nodemailer";
 import { sendResetPasswordEmail } from "./email.js";
@@ -32,6 +32,7 @@ const cookieOptions = (secure: boolean, maxAge: number) => ({
 
 const assertionFromHeaders = (headers: Request['headers']): ShibbolethAssertion => ({
   uid: headers['x-shib-eppn']?.toString(),
+  entityId: headers['x-shib-identity-provider']?.toString(),
   email: headers['x-shib-mail']?.toString(),
   affiliation: headers['x-shib-affiliation']?.toString(),
   displayName: headers['x-shib-displayname']?.toString(),
@@ -618,16 +619,59 @@ export const createApp = (
       return;
     }
 
-    const entityId = await users.findSsoEntityId(email);
-    if (!entityId) {
+    const ssoEntity: SsoEntityRow | undefined = await users.findSsoEntityIdByEmail(email);
+    if (!ssoEntity || !ssoEntity.ssoEntityId || !ssoEntity.displayName) {
       config.logger.warn({ email }, 'SSO Check - no entityId found for email');
       response.status(404).json({ success: false, message: 'No SSO entityId found for this email' });
       return;
     }
 
-    config.logger.debug({ email, entityId }, 'SSO Check - entityId found');
-    response.status(200).json({ success: true, email, entityId });
+    config.logger.debug({ email, ssoEntity }, 'SSO Check - entityId found');
+    response.status(200).json({
+      success: true,
+      email,
+      entityId: ssoEntity.ssoEntityId,
+      displayName: ssoEntity.displayName
+    });
   });
+
+  // If we are running locally, simulate the Shibboleth SSO login
+  if (process.env.NODE_ENV === 'development') {
+    app.all(['/Shibboleth.sso/Login'], nocache, async (request: Request, response: Response) => {
+      // Simulate the Shibboleth SSO login
+      const { target, entityId } = request.query as Record<string, string>;
+      if (!target || !entityId) {
+        config.logger.warn({ target, entityId }, 'SSO Login - missing target or entityId');
+        response.status(400).json({ success: false, message: 'Missing target or entityId' });
+        return;
+      }
+
+      const redirectUrl = new URL(target);
+      redirectUrl.searchParams.set('entityId', entityId);
+      config.logger.debug({ target, entityId, redirectUrl }, 'SSO Login - redirecting to callback');
+
+      const entityInfo: SsoEntityRow | undefined = await users.findSsoEntityIdById(entityId);
+      if (!entityInfo) {
+        config.logger.warn({ entityId }, 'SSO Login - no entity info found for entityId');
+        response.status(404).json({ success: false, message: 'No SSO entity info found for this entityId' });
+        return;
+      }
+
+      // Set the Shibboleth headers to simulate a successful SSO login
+      response.setHeader('x-shib-proxy-secret', config.shibbolethProxySecret ?? '');
+      response.setHeader('x-shib-eppn', `${randomUUID()}@example.edu`);
+      response.setHeader('x-shib-mail', `${randomUUID()}@example.edu`);
+      response.setHeader('x-shib-displayname', 'Mock User');
+      response.setHeader('x-shib-givenname', 'Mock');
+      response.setHeader('x-shib-sn', 'User');
+      response.setHeader('x-shib-session-id', `${randomUUID()}`);
+      response.setHeader('x-shib-identity-provider', entityId);
+      response.setHeader('x-shib-affiliation', entityInfo.displayName);
+
+      // Redirect to the callback URL with the Shibboleth headers set
+      response.redirect(302, redirectUrl.toString());
+    });
+  }
 
   /**
    * Endpoint for handling SSO login.
@@ -674,11 +718,24 @@ export const createApp = (
         response.status(403).json({ success: false, message: 'Untrusted Shibboleth proxy' });
         return;
       }
+
+console.log('RAW HEADERS:', request.headers);
+
       const assertion: ShibbolethAssertion = assertionFromHeaders(request.headers);
+
+console.log('ASSERTION:', assertion);
+
       const subject: string | undefined = assertion.uid ?? assertion.email;
-      if (!subject || !assertion.email) {
+      if (!subject || !assertion.email || !assertion.sessionId || !assertion.entityId) {
         config.logger.warn({ assertion }, 'SSO Callback - missing Shibboleth identity headers');
         response.status(400).json({ success: false, message: 'Missing Shibboleth identity headers' });
+        return;
+      }
+
+      const entityInfo: SsoEntityRow | undefined = await users.findSsoEntityIdById(assertion.entityId);
+      if (!entityInfo) {
+        config.logger.error({ entityId: assertion.entityId }, 'SSO Callback - no entity info found for entityId');
+        response.status(400).json({ success: false, message: 'No SSO entity info found for this entityId' });
         return;
       }
 

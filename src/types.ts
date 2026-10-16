@@ -102,6 +102,7 @@ export interface OidcRow {
 // A row from the affiliations table that includes the affiliationId and ssoEntityId.
 export interface SsoEntityRow {
   affiliationId: string;
+  displayName: string;
   ssoEntityId: string;
 }
 
@@ -194,6 +195,7 @@ export interface TokenClaims {
 // The data stored in the cache for a password reset token. This includes the user ID and the JWT ID (jti) of the access token.
 export interface ShibbolethAssertion {
   uid?: string;
+  entityId?: string;
   email?: string;
   affiliation?: string;
   displayName?: string;
