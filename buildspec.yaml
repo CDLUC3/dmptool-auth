@@ -48,7 +48,7 @@ phases:
 
       # Run the tests
       - echo "Running tests"
-      - npm run test-no-db
+      - npm run test
 
       # The code is good, so build the Docker image
       - echo "Building the Docker image..."

@@ -99,6 +99,12 @@ export interface OidcRow {
   payload: AdapterPayload;
 }
 
+// A row from the affiliations table that includes the affiliationId and ssoEntityId.
+export interface SsoEntityRow {
+  affiliationId: string;
+  ssoEntityId: string;
+}
+
 // A row from the users table in the database. The fields are in camelCase to match the database schema.
 export interface UserRow extends Record<string, unknown> {
   id: number | string;

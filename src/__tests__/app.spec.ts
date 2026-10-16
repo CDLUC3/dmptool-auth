@@ -131,8 +131,8 @@ describe('authentication routes', () => {
       .expect('Access-Control-Expose-Headers', 'X-CSRF-Token')
       .expect(200);
 
-    const previousDomain = process.env.domain;
-    process.env.domain = 'auth.example.test';
+    const previousDomain = process.env.DOMAIN;
+    process.env.DOMAIN = 'auth.example.test';
     try {
       const { app: productionApp } = await buildApp('production');
       await request(productionApp).options('/sign-up')
@@ -148,9 +148,9 @@ describe('authentication routes', () => {
         .expect(500);
     } finally {
       if (previousDomain === undefined) {
-        delete process.env.domain;
+        delete process.env.DOMAIN;
       } else {
-        process.env.domain = previousDomain;
+        process.env.DOMAIN = previousDomain;
       }
     }
   });
@@ -643,6 +643,32 @@ describe('authentication routes', () => {
       .send({ email: 'alice@example.test', entityId: 'https://idp.example.test' })
       .expect(302);
     expect(passthrough.headers.location).toContain('entityId=https%3A%2F%2Fidp.example.test');
+  });
+
+  it('checks SSO support and uses the returned entity ID to start the SSO workflow', async () => {
+    const { app } = await buildApp();
+    database.setSsoEntityIdForEmailDomain('example.test', 'https://idp.example.test');
+
+    const ssoCheck = await request(app).get('/sso-check')
+      .query({ email: 'alice@example.test' })
+      .expect(200, {
+        success: true,
+        email: 'alice@example.test',
+        entityId: 'https://idp.example.test',
+      });
+    expect(ssoCheck.headers['cache-control']).toContain('no-store');
+
+    const passthrough = await request(app).post('/sso')
+      .send({ email: ssoCheck.body.email, entityId: ssoCheck.body.entityId })
+      .expect(302);
+    expect(passthrough.headers.location).toContain('entityId=https%3A%2F%2Fidp.example.test');
+
+    await request(app).post('/sso-check')
+      .send({ email: 'nobody@missing.test' })
+      .expect(404, { success: false, message: 'No SSO entityId found for this email' });
+    await request(app).get('/sso-check')
+      .query({ email: 'invalid' })
+      .expect(400, { success: false, message: 'Invalid email address' });
   });
 
   it('rejects duplicate signups with a conflict response', async () => {

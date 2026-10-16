@@ -34,7 +34,8 @@ const user: PublicUser = {
   languageId: 'en',
   tokenVersion: 0,
   acceptedTerms: true,
-  failed_sign_in_attempts: 0,
+  locked: false,
+  remainingSignInAttempts: 0,
 };
 
 describe('OIDC provider configuration', () => {
