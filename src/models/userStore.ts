@@ -378,6 +378,9 @@ export class UserStore {
    * @param userId The ID of the user to log in.
    */
   async ssoLogin(userId: string): Promise<void> {
+
+console.log('UPDATING SSO LOGIN FOR USER ID:', userId);
+
     // Update the last sign-in timestamp and method for the user
     await queryTable(
         {...this.config.database, logger: this.config.logger},
