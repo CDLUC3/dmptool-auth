@@ -635,44 +635,6 @@ export const createApp = (
     });
   });
 
-  // If we are running locally, simulate the Shibboleth SSO login
-  if (process.env.NODE_ENV === 'development') {
-    app.all(['/Shibboleth.sso/Login'], nocache, async (request: Request, response: Response) => {
-      // Simulate the Shibboleth SSO login
-      const { target, entityId } = request.query as Record<string, string>;
-      if (!target || !entityId) {
-        config.logger.warn({ target, entityId }, 'SSO Login - missing target or entityId');
-        response.status(400).json({ success: false, message: 'Missing target or entityId' });
-        return;
-      }
-
-      const redirectUrl = new URL(target);
-      redirectUrl.searchParams.set('entityId', entityId);
-      config.logger.debug({ target, entityId, redirectUrl }, 'SSO Login - redirecting to callback');
-
-      const entityInfo: SsoEntityRow | undefined = await users.findSsoEntityIdById(entityId);
-      if (!entityInfo) {
-        config.logger.warn({ entityId }, 'SSO Login - no entity info found for entityId');
-        response.status(404).json({ success: false, message: 'No SSO entity info found for this entityId' });
-        return;
-      }
-
-      // Set the Shibboleth headers to simulate a successful SSO login
-      response.setHeader('x-shib-proxy-secret', config.shibbolethProxySecret ?? '');
-      response.setHeader('x-shib-eppn', `${randomUUID()}@example.edu`);
-      response.setHeader('x-shib-mail', `${randomUUID()}@example.edu`);
-      response.setHeader('x-shib-displayname', 'Mock User');
-      response.setHeader('x-shib-givenname', 'Mock');
-      response.setHeader('x-shib-sn', 'User');
-      response.setHeader('x-shib-session-id', `${randomUUID()}`);
-      response.setHeader('x-shib-identity-provider', entityId);
-      response.setHeader('x-shib-affiliation', entityInfo.displayName);
-
-      // Redirect to the callback URL with the Shibboleth headers set
-      response.redirect(302, redirectUrl.toString());
-    });
-  }
-
   /**
    * Endpoint for handling SSO login.
    *
