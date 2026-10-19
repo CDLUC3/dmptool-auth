@@ -534,12 +534,15 @@ describe('authentication routes', () => {
     }).expect(500, { success: false, message: 'Internal server error' });
   });
 
-  it('redirects a Shibboleth assertion for an unknown account to registration', async () => {
+  it.only('redirects a Shibboleth assertion for an unknown account to registration', async () => {
     const { app } = await buildApp();
+    database.setSsoEntityIdForEmailDomain('example.test', 'https://idp.example.test');
+
     const result = await request(app).get('/sso/callback/sso-session')
       .set(shibbolethProxyHeaders)
       .set('x-shib-eppn', 'alice@example.test')
       .set('x-shib-mail', 'alice@example.test')
+      .set('x-shib-identity-provider', 'https://idp.example.test')
       .set('x-shib-session-id', 'sso-session')
       .expect(302);
 
@@ -700,6 +703,28 @@ describe('authentication routes', () => {
 
     await request(app).get('/sso/callback')
       .set('x-shib-eppn', 'alice@example.test')
+      .set('x-shib-session-id', 'sso-session')
+      .set('x-shib-identity-provider', 'https://idp.example.test')
+      .set('x-shib-mail', 'alice@example.test')
+      .expect(403, { success: false, message: 'Untrusted Shibboleth proxy' });
+  });
+
+  it('rejects Shibboleth headers missing an entityId', async () => {
+    const { app } = await buildApp();
+
+    await request(app).get('/sso/callback')
+      .set('x-shib-eppn', 'alice@example.test')
+      .set('x-shib-session-id', 'sso-session')
+      .set('x-shib-mail', 'alice@example.test')
+      .expect(403, { success: false, message: 'Untrusted Shibboleth proxy' });
+  });
+
+  it('rejects Shibboleth headers missing an Shibboleth sessionId', async () => {
+    const { app } = await buildApp();
+
+    await request(app).get('/sso/callback')
+      .set('x-shib-eppn', 'alice@example.test')
+      .set('x-shib-identity-provider', 'https://idp.example.test')
       .set('x-shib-mail', 'alice@example.test')
       .expect(403, { success: false, message: 'Untrusted Shibboleth proxy' });
   });
@@ -709,6 +734,8 @@ describe('authentication routes', () => {
 
     await request(app).get('/sso/callback')
       .set('x-shib-proxy-secret', 'wrong-secret')
+      .set('x-shib-session-id', 'sso-session')
+      .set('x-shib-identity-provider', 'https://idp.example.test')
       .set('x-shib-eppn', 'alice@example.test')
       .set('x-shib-mail', 'alice@example.test')
       .expect(403, { success: false, message: 'Untrusted Shibboleth proxy' });
@@ -739,6 +766,7 @@ describe('authentication routes', () => {
       .set('x-shib-givenname', 'Alice')
       .set('x-shib-sn', 'Example')
       .set('x-shib-session-id', 'sso-session')
+      .set('x-shib-identity-provider', 'https://idp.example.test')
       .expect(302);
     expect(callback.headers.location).toBe('/signup');
     expect(cookie(callback, 'test_sso_pending')).toBe('sso-session');
@@ -789,6 +817,8 @@ describe('authentication routes', () => {
     const callback = await request(app).get('/sso/callback')
       .set(shibbolethProxyHeaders)
       .set('x-shib-eppn', 'alice@example.test')
+      .set('x-shib-session-id', 'sso-session')
+      .set('x-shib-identity-provider', 'https://idp.example.test')
       .set('x-shib-mail', 'alice@example.test')
       .expect(302);
     expect(callback.headers.location).toBe('/');

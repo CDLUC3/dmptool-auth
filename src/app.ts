@@ -696,7 +696,7 @@ export const createApp = (
       return;
     }
     const target = new URL('/sso/callback', config.issuer);
-    const queryString = `target=${encodeURIComponent(target.toString())}&entityId=${encodeURIComponent(entityId)}`;
+    const queryString = `target=${encodeURIComponent(target.toString())}&entityID=${encodeURIComponent(entityId)}`;
     config.logger.debug({ email, entityId, target, queryString }, 'SSO Passthru - initiated');
     response.redirect(302, `/Shibboleth.sso/Login?${queryString}`);
   });
@@ -713,13 +713,15 @@ export const createApp = (
    */
   app.all(['/sso/callback', '/sso/callback/:id'], nocache, async (request: Request, response: Response, next: NextFunction): Promise<void> => {
     try {
+
+console.log('SSO CALLBACK HEADERS:', request.headers);
+console.log('SSO CALLBACK PARAMS:', request.params);
+
       if (!hasTrustedShibbolethProxy(request.headers, config.shibbolethProxySecret)) {
         config.logger.warn({ params: request.params }, 'SSO Callback - untrusted proxy');
         response.status(403).json({ success: false, message: 'Untrusted Shibboleth proxy' });
         return;
       }
-
-console.log('RAW HEADERS:', request.headers);
 
       const assertion: ShibbolethAssertion = assertionFromHeaders(request.headers);
 
