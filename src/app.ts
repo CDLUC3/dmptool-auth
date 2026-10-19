@@ -753,10 +753,8 @@ export const createApp = (
         return;
       }
 
-      console.log('SSO Callback - user authenticated', { user });
-
       // Record the successful login for the user and issue new access and refresh tokens
-      await users.ssoLogin(assertion.entityId);
+      await users.ssoLogin(user.id);
       config.logger.debug({ user }, 'SSO Callback - user authenticated');
       const issued: AuthTokens = await tokens.issue(config.audienceUI, user);
       writeTokens(response, issued, config);
