@@ -236,8 +236,10 @@ export class UserStore {
     // Backfill the createdById and modifiedById fields for the new user
     await queryTable(
       { ...this.config.database, logger: this.config.logger },
-      `UPDATE ${usersTable} SET createdById = ?, modifiedById = ? WHERE id = ?`,
-      [userId, userId, userId],
+      `UPDATE ${usersTable} 
+      SET createdById = ?, modifiedById = ?, last_sign_in_via = ?, last_sign_in = CURRENT_TIMESTAMP
+      WHERE id = ?`,
+      [userId, userId, input.ssoId ? 'SSO' : 'PASSWORD', userId],
     );
 
     // Add the primary email address for the new user in the userEmails table
@@ -295,11 +297,11 @@ export class UserStore {
       const locked: boolean = failedSignInAttempts >= this.config.maxFailedSignInAttempts;
 
       await queryTable(
-        { ...this.config.database, logger: this.config.logger },
-        `UPDATE ${usersTable}
-         SET failed_sign_in_attempts = failed_sign_in_attempts + 1${locked ? ', locked = 1' : ''}
-         WHERE id = ?`,
-        [user.id],
+          {...this.config.database, logger: this.config.logger},
+          `UPDATE ${usersTable} SET failed_sign_in_attempts = 0, last_sign_in = CURRENT_TIMESTAMP,
+             last_sign_in_via = ?
+           WHERE id = ?`,
+          ['PASSWORD', user.id],
       );
       return {
         ...publicUser(user),
@@ -373,24 +375,17 @@ export class UserStore {
   /**
    * Logs in a user via SSO.
    *
-   * @param ssoId The SSO ID of the user to log in.
-   * @returns A Promise that resolves to the public user object if login is successful, or undefined if not.
+   * @param userId The ID of the user to log in.
    */
-  async ssoLogin(ssoId: string): Promise<PublicUser | undefined> {
-    const user: PublicUser | undefined = await this.findBySsoId(ssoId);
-    if (!user) return undefined;
-
-    // Update the last sign-in timestamp and method for the user if their account is not locked
-    if (!user.locked) {
-      await queryTable(
-          {...this.config.database, logger: this.config.logger},
-          `UPDATE ${usersTable} SET failed_sign_in_attempts = 0, last_sign_in = CURRENT_TIMESTAMP,
-             last_sign_in_via = ?
-           WHERE id = ?`,
-          ['SSO', user.id],
-      );
-    }
-    return user;
+  async ssoLogin(userId: string): Promise<void> {
+    // Update the last sign-in timestamp and method for the user
+    await queryTable(
+        {...this.config.database, logger: this.config.logger},
+        `UPDATE ${usersTable} SET failed_sign_in_attempts = 0, last_sign_in = CURRENT_TIMESTAMP,
+           last_sign_in_via = ?
+         WHERE id = ?`,
+        ['SSO', userId],
+    );
   }
 
   /**

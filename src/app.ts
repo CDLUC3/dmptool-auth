@@ -713,10 +713,6 @@ export const createApp = (
    */
   app.all(['/sso/callback', '/sso/callback/:id'], nocache, async (request: Request, response: Response, next: NextFunction): Promise<void> => {
     try {
-
-console.log('SSO CALLBACK HEADERS:', request.headers);
-console.log('SSO CALLBACK PARAMS:', request.params);
-
       if (!hasTrustedShibbolethProxy(request.headers, config.shibbolethProxySecret)) {
         config.logger.warn({ params: request.params }, 'SSO Callback - untrusted proxy');
         response.status(403).json({ success: false, message: 'Untrusted Shibboleth proxy' });
@@ -724,8 +720,6 @@ console.log('SSO CALLBACK PARAMS:', request.params);
       }
 
       const assertion: ShibbolethAssertion = assertionFromHeaders(request.headers);
-
-console.log('ASSERTION:', assertion);
 
       const subject: string | undefined = assertion.uid ?? assertion.email;
       if (!subject || !assertion.email || !assertion.sessionId || !assertion.entityId) {
@@ -759,6 +753,8 @@ console.log('ASSERTION:', assertion);
         return;
       }
 
+      // Record the successful login for the user and issue new access and refresh tokens
+      await users.ssoLogin(assertion.entityId);
       config.logger.debug({ user }, 'SSO Callback - user authenticated');
       const issued: AuthTokens = await tokens.issue(config.audienceUI, user);
       writeTokens(response, issued, config);
