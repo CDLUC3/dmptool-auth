@@ -366,7 +366,7 @@ export class UserStore {
 
     const pepperedPassword: string = this.getPepperedPassword(currentPassword);
     const user: User | undefined = await this.findRaw(
-        `SELECT u.id, u.password, u.role, u.givenName, u.surName, u.affiliationId, u.languageId, u.ssoId, u.tokenVersion, ue.email, u.failedLoginAttempts
+        `SELECT u.id, u.password, u.role, u.givenName, u.surName, u.affiliationId, u.languageId, u.ssoId, u.tokenVersion, ue.email, u.locked, u.failed_sign_in_attempts
        FROM ${usersTable} u JOIN ${userEmailsTable} ue ON ue.userId = u.id AND ue.isPrimary = 1
        WHERE u.id = ? AND u.active = 1 AND u.locked = 0 LIMIT 1`,
         [id],
