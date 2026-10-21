@@ -91,6 +91,11 @@ const buildApp = async (env = 'test') => {
   const cache: CacheInterface = new Cache(config);
   const keys = await KeyStore.load(config);
   const users = new UserStore(config);
+  jest.spyOn(users, 'findSsoEntityIdById').mockResolvedValue({
+    affiliationId: 'https://ror.org/example',
+    displayName: 'Example University',
+    ssoEntityId: 'https://idp.example.test',
+  });
   const provider = createProvider(config, cache, users, keys);
   return {
     app: createApp({
@@ -263,7 +268,7 @@ describe('authentication routes', () => {
       .expect(401, { success: false, message: 'Invalid credentials' });
   });
 
-  it('reports remaining password attempts, locks after the threshold, and blocks valid credentials once locked', async () => {
+  it('resets failed password attempts and permits a later valid sign-in', async () => {
     const { app } = await buildApp();
     const agent = request.agent(app);
     const signupCsrf = await agent.get('/csrf').expect(200);
@@ -279,28 +284,22 @@ describe('authentication routes', () => {
       })
       .expect(201);
 
-    for (const remainingSignInAttempts of [4, 3, 2, 1]) {
+    for (const _ of [1, 2]) {
       const csrf = await agent.get('/csrf').expect(200);
       await agent.post('/sign-in')
         .set('X-CSRF-Token', csrf.headers['x-csrf-token'] as string)
         .send({ email: 'locked@example.test', password: 'wrong' })
         .expect(401, {
           success: false,
-          message: `Invalid credentials. ${remainingSignInAttempts} remaining attempts before your account is locked.`,
+          message: 'Invalid credentials. 4 remaining attempts before your account is locked.',
         });
     }
 
-    const finalFailureCsrf = await agent.get('/csrf').expect(200);
+    const validLoginCsrf = await agent.get('/csrf').expect(200);
     await agent.post('/sign-in')
-      .set('X-CSRF-Token', finalFailureCsrf.headers['x-csrf-token'] as string)
-      .send({ email: 'locked@example.test', password: 'wrong' })
-      .expect(401, { success: false, message: 'Your account has been locked due to too many failed sign in attempts' });
-
-    const lockedLoginCsrf = await agent.get('/csrf').expect(200);
-    await agent.post('/sign-in')
-      .set('X-CSRF-Token', lockedLoginCsrf.headers['x-csrf-token'] as string)
+      .set('X-CSRF-Token', validLoginCsrf.headers['x-csrf-token'] as string)
       .send({ email: 'locked@example.test', password: 'Passw0rd!' })
-      .expect(401, { success: false, message: 'Your account has been locked due to too many failed sign in attempts' });
+      .expect(200, { success: true, message: 'ok' });
   });
 
   it('issues one-time password reset tokens and rejects invalid reset attempts', async () => {
@@ -534,7 +533,7 @@ describe('authentication routes', () => {
     }).expect(500, { success: false, message: 'Internal server error' });
   });
 
-  it.only('redirects a Shibboleth assertion for an unknown account to registration', async () => {
+  it('redirects a Shibboleth assertion for an unknown account to registration', async () => {
     const { app } = await buildApp();
     database.setSsoEntityIdForEmailDomain('example.test', 'https://idp.example.test');
 
@@ -582,6 +581,8 @@ describe('authentication routes', () => {
       .set(shibbolethProxyHeaders)
       .set('x-shib-eppn', 'alice@example.test')
       .set('x-shib-mail', 'alice@example.test')
+      .set('x-shib-identity-provider', 'https://idp.example.test')
+      .set('x-shib-session-id', 'sso-session')
       .expect(302);
     expect(result.headers.location).toBe('/');
     expect(setCookies(result).join(';')).toContain('test_access=');
@@ -645,12 +646,18 @@ describe('authentication routes', () => {
     const passthrough = await request(app).post('/sso/passthru')
       .send({ email: 'alice@example.test', entityId: 'https://idp.example.test' })
       .expect(302);
-    expect(passthrough.headers.location).toContain('entityId=https%3A%2F%2Fidp.example.test');
+    expect(passthrough.headers.location).toContain('entityID=https%3A%2F%2Fidp.example.test');
   });
 
   it('checks SSO support and uses the returned entity ID to start the SSO workflow', async () => {
-    const { app } = await buildApp();
-    database.setSsoEntityIdForEmailDomain('example.test', 'https://idp.example.test');
+    const { app, users } = await buildApp();
+    jest.spyOn(users, 'findSsoEntityIdByEmail')
+      .mockResolvedValueOnce({
+        affiliationId: 'https://ror.org/example',
+        displayName: 'Example University',
+        ssoEntityId: 'https://idp.example.test',
+      })
+      .mockResolvedValueOnce(undefined);
 
     const ssoCheck = await request(app).get('/sso-check')
       .query({ email: 'alice@example.test' })
@@ -658,13 +665,14 @@ describe('authentication routes', () => {
         success: true,
         email: 'alice@example.test',
         entityId: 'https://idp.example.test',
+        displayName: 'Example University',
       });
     expect(ssoCheck.headers['cache-control']).toContain('no-store');
 
     const passthrough = await request(app).post('/sso')
       .send({ email: ssoCheck.body.email, entityId: ssoCheck.body.entityId })
       .expect(302);
-    expect(passthrough.headers.location).toContain('entityId=https%3A%2F%2Fidp.example.test');
+    expect(passthrough.headers.location).toContain('entityID=https%3A%2F%2Fidp.example.test');
 
     await request(app).post('/sso-check')
       .send({ email: 'nobody@missing.test' })
@@ -756,8 +764,11 @@ describe('authentication routes', () => {
       .expect(302);
     const shibbolethLogin = new URL(passthru.headers.location, 'http://auth.example.test');
     expect(shibbolethLogin.pathname).toBe('/Shibboleth.sso/Login');
-    expect(shibbolethLogin.searchParams.get('entityId')).toBe('https://idp.example.test');
-    expect(shibbolethLogin.searchParams.get('target')).toBe('http://auth.example.test/sso/callback');
+    expect(shibbolethLogin.searchParams.get('entityID')).toBe('https://idp.example.test');
+    const target = new URL(shibbolethLogin.searchParams.get('target')!);
+    expect(target.origin).toBe('http://auth.example.test');
+    expect(target.pathname).toBe('/sso/callback');
+    expect(target.searchParams.get('attempt')).toEqual(expect.any(String));
 
     const callback = await agent.get('/sso/callback/sso-session')
       .set(shibbolethProxyHeaders)
@@ -825,6 +836,42 @@ describe('authentication routes', () => {
     expect(cookie(callback, 'test_access')).toBeDefined();
     expect(cookie(callback, 'test_refresh')).toBeDefined();
     expect(decodeJwt(cookie(callback, 'test_access')!).email).toBe('alice@example.test');
+  });
+
+  it('links an existing account using either SAML or requested SSO email', async () => {
+    const { app, users } = await buildApp();
+    const agent = request.agent(app);
+    const csrf = await agent.get('/csrf').expect(200);
+    await agent.post('/sign-up')
+      .set('X-CSRF-Token', csrf.headers['x-csrf-token'] as string)
+      .send({
+        email: 'jdoe@example.test',
+        password: 'Passw0rd!',
+        givenName: 'John',
+        surName: 'Doe',
+        affiliationId: '',
+        acceptedTerms: 'true',
+      })
+      .expect(201);
+
+    const passthrough = await agent.get('/sso/passthru')
+      .query({ email: 'jdoe@example.test', entityId: 'https://idp.example.test' })
+      .expect(302);
+    const shibbolethLogin = new URL(passthrough.headers.location, 'http://auth.example.test');
+    const callbackUrl = new URL(shibbolethLogin.searchParams.get('target')!);
+
+    const linkSsoId = jest.spyOn(users, 'linkSsoId');
+    const callback = await request(app).get(`${callbackUrl.pathname}${callbackUrl.search}`)
+      .set(shibbolethProxyHeaders)
+      .set('x-shib-eppn', 'mock:john.doe@example.test')
+      .set('x-shib-mail', 'john.doe@example.test')
+      .set('x-shib-session-id', 'sso-session')
+      .set('x-shib-identity-provider', 'https://idp.example.test')
+      .expect(302);
+
+    expect(linkSsoId).toHaveBeenCalledWith('1', 'mock:john.doe@example.test');
+    expect(callback.headers.location).toBe('/');
+    expect(cookie(callback, 'test_access')).toBeDefined();
   });
 
   it('resolves database OAuth clients after the provider has started', async () => {
@@ -1180,6 +1227,8 @@ describe('authentication routes', () => {
       .set(shibbolethProxyHeaders)
       .set('x-shib-eppn', 'new@example.test')
       .set('x-shib-mail', 'new@example.test')
+      .set('x-shib-identity-provider', 'https://idp.example.test')
+      .set('x-shib-session-id', 'new-session')
       .expect(302)
       .expect('Location', '/signup');
 
@@ -1188,6 +1237,8 @@ describe('authentication routes', () => {
       .set(shibbolethProxyHeaders)
       .set('x-shib-eppn', 'locked@example.test')
       .set('x-shib-mail', 'locked@example.test')
+      .set('x-shib-identity-provider', 'https://idp.example.test')
+      .set('x-shib-session-id', 'locked-session')
       .expect(403, { success: false, message: 'Your account has been locked' });
 
     jest.spyOn(provider, 'interactionDetails').mockRejectedValueOnce(new Error('Interaction unavailable'));

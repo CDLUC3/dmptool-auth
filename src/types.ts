@@ -137,6 +137,7 @@ export interface User {
   acceptedTerms: boolean;
   locked: boolean;
   remainingSignInAttempts: number;
+  wasJustLocked: boolean;
 }
 
 // A public user object that omits the passwordHash field. This is used when returning user data to clients.

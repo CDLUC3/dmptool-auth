@@ -176,14 +176,22 @@ describe('UserStore', () => {
     await expect(repository.findById('1')).resolves.toMatchObject({ id: '1' });
   });
 
-  it('finds the SSO entity ID for an email domain', async () => {
+  it('finds the SSO entity for an email domain', async () => {
     const repository = new UserStore(config as never);
     queryTable.mockResolvedValueOnce({
-      results: [{ affiliationId: 'https://ror.org/example', ssoEntityId: 'https://idp.example.test' }],
+      results: [{
+        affiliationId: 'https://ror.org/example',
+        displayName: 'Example University',
+        ssoEntityId: 'https://idp.example.test',
+      }],
       fields: [],
     });
 
-    await expect(repository.findSsoEntityId('user@example.test')).resolves.toBe('https://idp.example.test');
+    await expect(repository.findSsoEntityIdByEmail('user@example.test')).resolves.toEqual({
+      affiliationId: 'https://ror.org/example',
+      displayName: 'Example University',
+      ssoEntityId: 'https://idp.example.test',
+    });
     expect(queryTable).toHaveBeenCalledWith(
       expect.anything(),
       expect.stringContaining('FROM affiliationEmailDomains AS aed JOIN affiliations AS a'),
@@ -199,9 +207,35 @@ describe('UserStore', () => {
     const repository = new UserStore(config as never);
     if (queryResult) queryTable.mockResolvedValueOnce(queryResult);
 
-    await expect(repository.findSsoEntityId(email)).resolves.toBeUndefined();
+    await expect(repository.findSsoEntityIdByEmail(email)).resolves.toBeUndefined();
     if (queryResult) expect(queryTable).toHaveBeenCalledWith(expect.anything(), expect.any(String), ['example.test']);
     else expect(queryTable).not.toHaveBeenCalled();
+  });
+
+  it('finds the SSO entity for an entity ID', async () => {
+    const repository = new UserStore(config as never);
+    queryTable.mockResolvedValueOnce({
+      results: [{
+        affiliationId: 'https://ror.org/example',
+        displayName: 'Example University',
+        ssoEntityId: 'https://idp.example.test',
+      }],
+      fields: [],
+    });
+
+    await expect(repository.findSsoEntityIdById('https://idp.example.test')).resolves.toEqual({
+      affiliationId: 'https://ror.org/example',
+      displayName: 'Example University',
+      ssoEntityId: 'https://idp.example.test',
+    });
+    expect(queryTable).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.stringContaining('FROM affiliations AS a WHERE a.ssoEntityId = ?'),
+      ['https://idp.example.test'],
+    );
+
+    queryTable.mockResolvedValueOnce({ results: [], fields: [] });
+    await expect(repository.findSsoEntityIdById('missing')).resolves.toBeUndefined();
   });
 
   it.each([
@@ -245,7 +279,7 @@ describe('UserStore', () => {
     );
   });
 
-  it('counts every incorrect password and locks the account at the configured threshold', async () => {
+  it('resets failed login attempts after incorrect passwords', async () => {
     const repository = new UserStore(config as never);
     const user = {
       id: '1', email: row.email, passwordHash: await bcrypt.hash(pepperPassword('Passw0rd!'), 4), givenName: 'User',
@@ -262,8 +296,8 @@ describe('UserStore', () => {
     });
     expect(queryTable).toHaveBeenCalledWith(
       expect.anything(),
-      expect.stringContaining('failed_sign_in_attempts = failed_sign_in_attempts + 1'),
-      [user.id],
+      expect.stringContaining('failed_sign_in_attempts = 0'),
+      ['PASSWORD', user.id],
     );
 
     jest.spyOn(repository, 'findByEmail').mockResolvedValueOnce({ ...user, remainingSignInAttempts: 1 });
@@ -276,8 +310,8 @@ describe('UserStore', () => {
     });
     expect(queryTable).toHaveBeenLastCalledWith(
       expect.anything(),
-      expect.stringContaining('locked = 1'),
-      [user.id],
+      expect.stringContaining('failed_sign_in_attempts = 0'),
+      ['PASSWORD', user.id],
     );
 
     jest.spyOn(repository, 'findByEmail').mockResolvedValueOnce({ ...user, locked: true, remainingSignInAttempts: 0 });
@@ -287,21 +321,29 @@ describe('UserStore', () => {
 
   it('resets failed login attempts after a successful SSO login', async () => {
     const repository = new UserStore(config as never);
-    const user = {
-      id: '1', email: row.email, passwordHash: 'hash', givenName: 'User', surName: 'Example',
-      role: 'RESEARCHER', affiliationId: 'org', languageId: 'en', tokenVersion: 0,
-      acceptedTerms: true, locked: false, remainingSignInAttempts: 2,
-    };
-    jest.spyOn(repository, 'findBySsoId').mockResolvedValueOnce(undefined);
-    await expect(repository.ssoLogin('missing')).resolves.toBeUndefined();
-    jest.spyOn(repository, 'findBySsoId').mockResolvedValueOnce(user);
     queryTable.mockResolvedValueOnce({ results: { affectedRows: 1 }, fields: [] });
-    await expect(repository.ssoLogin('sso-1')).resolves.toMatchObject({ id: '1' });
+    await expect(repository.ssoLogin('1')).resolves.toBeUndefined();
     expect(queryTable).toHaveBeenLastCalledWith(
       expect.anything(),
       expect.stringContaining('failed_sign_in_attempts = 0'),
-      ['SSO', user.id],
+      ['SSO', '1'],
     );
+  });
+
+  it('links a trusted SSO identity to an active user', async () => {
+    const repository = new UserStore(config as never);
+    queryTable.mockResolvedValueOnce({ results: { affectedRows: 1 }, fields: [] });
+
+    await expect(repository.linkSsoId('1', 'mock:user@example.test')).resolves.toBeUndefined();
+    expect(queryTable).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.stringContaining('UPDATE users SET ssoId = ?'),
+      ['mock:user@example.test', '1'],
+    );
+
+    queryTable.mockResolvedValueOnce({ results: { affectedRows: 0 }, fields: [] });
+    await expect(repository.linkSsoId('missing', 'mock:missing@example.test'))
+      .rejects.toThrow('Unable to link SSO identity for user missing');
   });
 
   it('validates and persists reset passwords', async () => {

@@ -10,7 +10,7 @@ import type { Config, PublicUser, RefreshTokenData, ShibbolethAssertion, SsoEnti
 import type { SignupAttempt, UserStore } from './models/userStore.js';
 import type { KeyStore } from './models/keyStore.js';
 import type { Mail, SMTPSentMessageInfo } from "nodemailer";
-import { sendResetPasswordEmail } from "./email.js";
+import {sendAccountLockedEmail, sendResetPasswordEmail} from "./email.js";
 
 interface Dependencies {
   config: Config;
@@ -51,6 +51,8 @@ const hasTrustedShibbolethProxy = (headers: Request['headers'], secret: string |
 
 const stringArray = (value: unknown): string[] =>
   Array.isArray(value) && value.every((item): item is string => typeof item === 'string') ? value : [];
+
+const ssoLoginAttemptTtlSeconds = 600;
 
 /**
  * Write the access and refresh tokens to the response cookies.
@@ -97,18 +99,11 @@ const nocache = (
 const handleUserAuthErrors = (
   user: PublicUser & { authenticationFailed?: true },
 ): string | undefined => {
-  // If no user was found return a 401
-  if (!user.id) {
+  // If no user was found, their account is locked or the authentication failed
+  if (!user.id || user.locked || user.authenticationFailed) {
     return 'Invalid credentials';
   }
-  // If the user has exceeded the maximum number of failed sign-in attempts
-  if (user.locked) {
-    return 'Your account has been locked due to too many failed sign in attempts';
-  }
-  // if the user has failed with a bad password, warn them about the remaining attempts
-  if (user.authenticationFailed && user.remainingSignInAttempts > 0) {
-    return `Invalid credentials. ${user.remainingSignInAttempts} remaining attempts before your account is locked.`
-  }
+
   return undefined;
 };
 
@@ -319,6 +314,7 @@ export const createApp = (
         ssoId,
         acceptedTerms,
         locked: false,
+        wasJustLocked: false,
         remainingSignInAttempts: 0,
       });
 
@@ -366,6 +362,7 @@ export const createApp = (
   app.post('/sign-in', nocache, async (request: Request, response: Response, next: NextFunction): Promise<void> => {
     try {
       const { email, password } = request.body as Record<string, string>;
+
       if (!email || !password) {
         config.logger.debug({ email }, 'Sign in - failed');
         response.status(401).json({ success: false, message: 'Invalid credentials' });
@@ -373,6 +370,12 @@ export const createApp = (
       }
       // Authenticate the user using the provided email and password
       const user = await users.authenticate(email, password);
+
+      // If the account was just locked by this attempt, email the user notifying them
+      // of the lockout
+      if (user.wasJustLocked) {
+        await sendAccountLockedEmail(config, emailer, user.email);
+      }
 
       // Check for any authentication errors, such as invalid credentials or account lockout
       const errMessage: string | undefined = handleUserAuthErrors(user);
@@ -615,14 +618,29 @@ export const createApp = (
     const { email } = values as Record<string, string>;
     if (!email || !email.includes('@')) {
       config.logger.warn({ email }, 'SSO Check - invalid email');
-      response.status(400).json({ success: false, message: 'Invalid email address' });
+      response.status(400).json({
+        success: false,
+        message: 'Invalid email address'
+      });
       return;
     }
 
-    const ssoEntity: SsoEntityRow | undefined = await users.findSsoEntityIdByEmail(email);
+    // See if there is already a user with that email address
+    const user: PublicUser | undefined = await users.findByEmail(email);
+
+    // Find the entity id for the user. If no user was found OR the user does not
+    // have an ssoId, then we will look up the entity id by email. Otherwise, we
+    // will look it up by the user's affiliationId.
+    let ssoEntity: SsoEntityRow | undefined = !user || !user.ssoId
+      ? await users.findSsoEntityIdByEmail(email)
+      : await users.findSsoEntityIdByURI(user.affiliationId);
+
     if (!ssoEntity || !ssoEntity.ssoEntityId || !ssoEntity.displayName) {
       config.logger.warn({ email }, 'SSO Check - no entityId found for email');
-      response.status(404).json({ success: false, message: 'No SSO entityId found for this email' });
+      response.status(404).json({
+        success: false,
+        message: 'No SSO entityId found for this email'
+      });
       return;
     }
 
@@ -644,7 +662,7 @@ export const createApp = (
    * @param next The next middleware function in the stack
    * @returns A redirect response to the SSO login page
    */
-  app.all(['/sso', '/sso/passthru'], nocache, (request: Request, response: Response) => {
+  app.all(['/sso', '/sso/passthru'], nocache, async (request: Request, response: Response): Promise<void> => {
     const values: unknown = request.method === 'GET' ? request.query : request.body;
     const { email, entityId } = values as Record<string, string>;
     if (!email || !email.includes('@')) {
@@ -658,6 +676,9 @@ export const createApp = (
       return;
     }
     const target = new URL('/sso/callback', config.issuer);
+    const attemptId = randomUUID();
+    target.searchParams.set('attempt', attemptId);
+    await cache.set(`auth:sso-login-attempt:${attemptId}`, email, ssoLoginAttemptTtlSeconds);
     const queryString = `target=${encodeURIComponent(target.toString())}&entityID=${encodeURIComponent(entityId)}`;
     config.logger.debug({ email, entityId, target, queryString }, 'SSO Passthru - initiated');
     response.redirect(302, `/Shibboleth.sso/Login?${queryString}`);
@@ -683,6 +704,7 @@ export const createApp = (
 
       const assertion: ShibbolethAssertion = assertionFromHeaders(request.headers);
 
+      // Check that the required Shibboleth identity headers are present. If any are missing, return an error response.
       const subject: string | undefined = assertion.uid ?? assertion.email;
       if (!subject || !assertion.email || !assertion.sessionId || !assertion.entityId) {
         config.logger.warn({ assertion }, 'SSO Callback - missing Shibboleth identity headers');
@@ -690,6 +712,7 @@ export const createApp = (
         return;
       }
 
+      // Find the SSO entity info for the given entityId. If no entity info is found, return an error response.
       const entityInfo: SsoEntityRow | undefined = await users.findSsoEntityIdById(assertion.entityId);
       if (!entityInfo) {
         config.logger.error({ entityId: assertion.entityId }, 'SSO Callback - no entity info found for entityId');
@@ -697,8 +720,29 @@ export const createApp = (
         return;
       }
 
-      // Look up the user by their SSO ID (subject) in the user store
-      const user: PublicUser | undefined = await users.findBySsoId(subject);
+      // Check if the user is already linked to an SSO account. If not, check if there is a pending SSO login attempt
+      // for the given attemptId.
+      const attemptId = typeof request.query.attempt === 'string' ? request.query.attempt : undefined;
+      const requestedEmail = attemptId
+        ? await cache.consume(`auth:sso-login-attempt:${attemptId}`)
+        : undefined;
+
+      // If the user is not found by SSO ID, check if there is a user with the requested email
+      // and link them to the SSO ID.
+      let user: PublicUser | undefined = await users.findBySsoId(subject);
+      if (!user) {
+        const emails = [...new Set([assertion.email, requestedEmail].filter((email): email is string => Boolean(email)))];
+        for (const email of emails) {
+          const matchingUser = await users.findByEmail(email);
+          if (matchingUser) {
+            await users.linkSsoId(matchingUser.id, subject);
+            user = matchingUser;
+            break;
+          }
+        }
+      }
+
+      // If no user is found, store the SSO assertion in the cache and redirect to the sign-up page
       if (!user) {
         config.logger.debug({ subject }, 'SSO Callback - no matching user found');
         const signupId: string = assertion.sessionId ?? crypto.randomUUID();

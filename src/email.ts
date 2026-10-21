@@ -131,3 +131,42 @@ export const sendResetPasswordEmail = async (
         message
     );
 }
+
+/**
+ * Sends an account locked email to the user.
+ *
+ * @param config the configuration object containing email settings and logger
+ * @param emailer the nodemailer transporter instance used to send emails
+ * @param userEmail the email address of the user to send the reset password email to
+ * @returns a Promise that resolves to true if the email was sent successfully, false otherwise
+ */
+export const sendAccountLockedEmail = async (
+    config: Config,
+    emailer: Mail<SMTPSentMessageInfo>,
+    userEmail: string,
+): Promise<boolean> => {
+  if (!userEmail) {
+    config.logger.error(
+      { userId: userEmail },
+      `User with ID ${userEmail} does not have an email address and cannot be sent a reset password email`
+    );
+    return false;
+  }
+
+  const message = `
+<p>Hello ${userEmail},</p>
+<p>Your account has been locked due to too many failed login attempts.</p>
+<p>Please contact us at <a href="mailto:${config.helpDeskAddress}">${config.helpDeskAddress}</a> to regain access to your account.<br>The DMP Tool team</p>
+`;
+
+  return await sendEmail(
+    config,
+    emailer,
+    'AccountLocked',
+    [userEmail],
+    [],
+    [],
+    'Your account has been locked',
+    message
+  );
+}

@@ -44,6 +44,7 @@ const publicUser = (user: User): PublicUser => ({
   acceptedTerms: user.acceptedTerms,
   locked: user.locked,
   remainingSignInAttempts: user.remainingSignInAttempts,
+  wasJustLocked: user.wasJustLocked,
 });
 
 /**
@@ -69,6 +70,7 @@ const toUser = (
   ssoId: row.ssoId ?? undefined,
   acceptedTerms: true,
   locked: row.locked ?? false,
+  wasJustLocked: false,
   remainingSignInAttempts: row.locked
     ? 0
     : calculateRemainingSignInAttempts(row.failed_sign_in_attempts ?? 0, maxSigninAttempts) ?? 0,
@@ -296,16 +298,18 @@ export class UserStore {
       const failedSignInAttempts: number = this.config.maxFailedSignInAttempts - user.remainingSignInAttempts + 1;
       const locked: boolean = failedSignInAttempts >= this.config.maxFailedSignInAttempts;
 
+      // Increment the failed sign-in attempts and lock the account if necessary
       await queryTable(
           {...this.config.database, logger: this.config.logger},
-          `UPDATE ${usersTable} SET failed_sign_in_attempts = 0, last_sign_in = CURRENT_TIMESTAMP,
-             last_sign_in_via = ?
+          `UPDATE ${usersTable} SET failed_sign_in_attempts = ?, locked = ?
            WHERE id = ?`,
-          ['PASSWORD', user.id],
+          [failedSignInAttempts, locked, user.id],
       );
+
       return {
         ...publicUser(user),
         locked,
+        wasJustLocked: locked && !user.locked,
         remainingSignInAttempts: calculateRemainingSignInAttempts(
           failedSignInAttempts,
           this.config.maxFailedSignInAttempts,
@@ -386,6 +390,23 @@ export class UserStore {
          WHERE id = ?`,
         ['SSO', userId],
     );
+  }
+
+  /**
+   * Associates a trusted SSO subject with an existing user account.
+   *
+   * @param userId The user to associate with the SSO subject.
+   * @param ssoId The trusted SSO subject.
+   */
+  async linkSsoId(userId: string, ssoId: string): Promise<void> {
+    const response: dbQueryResponse = await queryTable(
+      { ...this.config.database, logger: this.config.logger },
+      `UPDATE ${usersTable} SET ssoId = ? WHERE id = ? AND active = 1`,
+      [ssoId, userId],
+    );
+    if (!response.results || Array.isArray(response.results) || (response.results as ResultSetHeader).affectedRows === 0) {
+      throw new Error(`Unable to link SSO identity for user ${userId}`);
+    }
   }
 
   /**
@@ -470,7 +491,28 @@ export class UserStore {
   }
 
   /**
-   * Finds the Affiliation associated with the entityId.
+   * Finds the SSO information for the affiliation associated with the uri.
+   *
+   * @param uri The the affiliation URI to check for an associated SSO entity ID.
+   * @returns A Promise that resolves to the SSO entity ID and display name if found, otherwise undefined.
+   */
+  async findSsoEntityIdByURI(
+    uri: string,
+  ): Promise<SsoEntityRow | undefined> {
+    const ssoEntityRows : dbQueryResponse = await queryTable(
+        { ...this.config.database, logger: this.config.logger },
+        `SELECT a.uri as affiliationId, a.displayName, a.ssoEntityId
+      FROM affiliations AS a WHERE a.uri = ? LIMIT 1;`,
+        [uri],
+    );
+    if (!ssoEntityRows.results || !Array.isArray(ssoEntityRows.results)) return undefined;
+
+    const ssoEntityRow = ssoEntityRows.results[0] as SsoEntityRow | undefined;
+    return ssoEntityRow || undefined;
+  }
+
+  /**
+   * Finds the SSO information for the Affiliation associated with the entityId.
    *
    * @param entityId The SSO entity ID to check for an associated Affiliation.
    * @returns A Promise that resolves to the SSO entity ID and display name if found, otherwise undefined.
