@@ -284,15 +284,13 @@ describe('authentication routes', () => {
       })
       .expect(201);
 
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     for (const _ of [1, 2]) {
       const csrf = await agent.get('/csrf').expect(200);
       await agent.post('/sign-in')
         .set('X-CSRF-Token', csrf.headers['x-csrf-token'] as string)
         .send({ email: 'locked@example.test', password: 'wrong' })
-        .expect(401, {
-          success: false,
-          message: 'Invalid credentials. 4 remaining attempts before your account is locked.',
-        });
+        .expect(401, { success: false, message: 'Invalid credentials' });
     }
 
     const validLoginCsrf = await agent.get('/csrf').expect(200);
@@ -504,10 +502,7 @@ describe('authentication routes', () => {
     await agent.post('/sign-in')
       .set('X-CSRF-Token', signinCsrf.headers['x-csrf-token'] as string)
       .send({ email: 'alice@example.test', password: 'Passw0rd!' })
-      .expect(401, {
-        success: false,
-        message: 'Invalid credentials. 4 remaining attempts before your account is locked.',
-      });
+      .expect(401, { success: false, message: 'Invalid credentials' });
 
     const newPasswordSigninCsrf = await agent.get('/csrf').expect(200);
     await agent.post('/sign-in')

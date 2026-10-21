@@ -238,6 +238,28 @@ describe('UserStore', () => {
     await expect(repository.findSsoEntityIdById('missing')).resolves.toBeUndefined();
   });
 
+  it('finds the SSO entity for an affiliation URI', async () => {
+    const repository = new UserStore(config as never);
+    const entity = {
+      affiliationId: 'https://ror.org/example',
+      displayName: 'Example University',
+      ssoEntityId: 'https://idp.example.test',
+    };
+    queryTable
+      .mockResolvedValueOnce({ results: [entity], fields: [] })
+      .mockResolvedValueOnce({ results: [], fields: [] })
+      .mockResolvedValueOnce({ results: { affectedRows: 0 }, fields: [] });
+
+    await expect(repository.findSsoEntityIdByURI(entity.affiliationId)).resolves.toEqual(entity);
+    await expect(repository.findSsoEntityIdByURI('https://ror.org/missing')).resolves.toBeUndefined();
+    await expect(repository.findSsoEntityIdByURI('https://ror.org/unexpected')).resolves.toBeUndefined();
+    expect(queryTable).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.stringContaining('FROM affiliations AS a WHERE a.uri = ?'),
+      [entity.affiliationId],
+    );
+  });
+
   it.each([
     [{ ...row, id: false }],
     [{ ...row, id: 1, email: 4 }],
@@ -296,8 +318,8 @@ describe('UserStore', () => {
     });
     expect(queryTable).toHaveBeenCalledWith(
       expect.anything(),
-      expect.stringContaining('failed_sign_in_attempts = 0'),
-      ['PASSWORD', user.id],
+      expect.stringContaining('failed_sign_in_attempts = ?, locked = ?'),
+      [1, false, user.id],
     );
 
     jest.spyOn(repository, 'findByEmail').mockResolvedValueOnce({ ...user, remainingSignInAttempts: 1 });
@@ -310,8 +332,8 @@ describe('UserStore', () => {
     });
     expect(queryTable).toHaveBeenLastCalledWith(
       expect.anything(),
-      expect.stringContaining('failed_sign_in_attempts = 0'),
-      ['PASSWORD', user.id],
+      expect.stringContaining('failed_sign_in_attempts = ?, locked = ?'),
+      [5, true, user.id],
     );
 
     jest.spyOn(repository, 'findByEmail').mockResolvedValueOnce({ ...user, locked: true, remainingSignInAttempts: 0 });
