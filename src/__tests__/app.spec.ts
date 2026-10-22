@@ -763,7 +763,7 @@ describe('authentication routes', () => {
     const target = new URL(shibbolethLogin.searchParams.get('target')!);
     expect(target.origin).toBe('http://auth.example.test');
     expect(target.pathname).toBe('/sso/callback');
-    expect(target.searchParams.get('attempt')).toEqual(expect.any(String));
+    expect(target.search).toBe('');
 
     const callback = await agent.get('/sso/callback/sso-session')
       .set(shibbolethProxyHeaders)

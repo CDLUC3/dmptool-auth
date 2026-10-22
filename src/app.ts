@@ -52,8 +52,6 @@ const hasTrustedShibbolethProxy = (headers: Request['headers'], secret: string |
 const stringArray = (value: unknown): string[] =>
   Array.isArray(value) && value.every((item): item is string => typeof item === 'string') ? value : [];
 
-const ssoLoginAttemptTtlSeconds = 600;
-
 /**
  * Write the access and refresh tokens to the response cookies.
  *
@@ -744,9 +742,6 @@ export const createApp = (
       return;
     }
     const target = new URL('/sso/callback', config.issuer);
-    const attemptId = randomUUID();
-    target.searchParams.set('attempt', attemptId);
-    await cache.set(`auth:sso-login-attempt:${attemptId}`, email, ssoLoginAttemptTtlSeconds);
     const queryString = `target=${encodeURIComponent(target.toString())}&entityID=${encodeURIComponent(entityId)}`;
     config.logger.debug({ email, entityId, target, queryString }, 'SSO Passthru - initiated');
     response.redirect(302, `/Shibboleth.sso/Login?${queryString}`);
@@ -787,11 +782,6 @@ export const createApp = (
         response.status(400).json({ success: false, message: 'No SSO entity info found for this entityId' });
         return;
       }
-
-      // Consume the initiating request's caller-provided email. It may inform the
-      // IdP selection but must never be treated as proof of account ownership.
-      const attemptId = typeof request.query.attempt === 'string' ? request.query.attempt : undefined;
-      if (attemptId) await cache.consume(`auth:sso-login-attempt:${attemptId}`);
 
       // Auto-link only when the IdP's asserted email identifies an unlinked account.
       let user: PublicUser | undefined = await users.findBySsoId(subject);

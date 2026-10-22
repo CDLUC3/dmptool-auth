@@ -137,7 +137,7 @@ export const sendResetPasswordEmail = async (
  *
  * @param config the configuration object containing email settings and logger
  * @param emailer the nodemailer transporter instance used to send emails
- * @param userEmail the email address of the user to send the reset password email to
+ * @param userEmail the email address of the user to send the account locked email to
  * @returns a Promise that resolves to true if the email was sent successfully, false otherwise
  */
 export const sendAccountLockedEmail = async (
@@ -148,7 +148,7 @@ export const sendAccountLockedEmail = async (
   if (!userEmail) {
     config.logger.error(
       { userId: userEmail },
-      `User with ID ${userEmail} does not have an email address and cannot be sent a reset password email`
+      `User with ID ${userEmail} does not have an email address and cannot be sent an account locked email`
     );
     return false;
   }
