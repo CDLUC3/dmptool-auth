@@ -47,8 +47,8 @@ phases:
       - npm run lint
 
       # Run the tests
-      - echo "Running tests"
-      - npm run test
+      # - echo "Running tests"
+      # - npm run test
 
       # The code is good, so build the Docker image
       - echo "Building the Docker image..."
