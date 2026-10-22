@@ -295,25 +295,36 @@ export class UserStore {
     // Compare the provided password with the stored password hash
     const passwordHash: string = this.getPepperedPassword(password);
     if (!(await bcrypt.compare(passwordHash, user.passwordHash))) {
-      const failedSignInAttempts: number = this.config.maxFailedSignInAttempts - user.remainingSignInAttempts + 1;
-      const locked: boolean = failedSignInAttempts >= this.config.maxFailedSignInAttempts;
-
-      // Increment the failed sign-in attempts and lock the account if necessary
-      await queryTable(
-          {...this.config.database, logger: this.config.logger},
-          `UPDATE ${usersTable} SET failed_sign_in_attempts = ?, locked = ?
-           WHERE id = ?`,
-          [failedSignInAttempts, locked, user.id],
+      const lockThreshold = this.config.maxFailedSignInAttempts - 1;
+      const increment = await queryTable(
+        { ...this.config.database, logger: this.config.logger },
+        `UPDATE ${usersTable}
+         SET failed_sign_in_attempts = failed_sign_in_attempts + 1
+         WHERE id = ? AND active = 1 AND locked = 0 AND failed_sign_in_attempts < ?`,
+        [user.id, lockThreshold],
       );
+      const incremented = Boolean(increment.results && !Array.isArray(increment.results)
+        && (increment.results as ResultSetHeader).affectedRows > 0);
+
+      let wasJustLocked = false;
+      if (!incremented) {
+        const lock = await queryTable(
+          { ...this.config.database, logger: this.config.logger },
+          `UPDATE ${usersTable}
+           SET failed_sign_in_attempts = failed_sign_in_attempts + 1, locked = 1
+           WHERE id = ? AND active = 1 AND locked = 0 AND failed_sign_in_attempts >= ?`,
+          [user.id, lockThreshold],
+        );
+        wasJustLocked = Boolean(lock.results && !Array.isArray(lock.results)
+          && (lock.results as ResultSetHeader).affectedRows > 0);
+      }
+
+      const currentUser = await this.findByEmail(email);
+      if (!currentUser) return { authenticationFailed: true } as AuthenticationAttempt;
 
       return {
-        ...publicUser(user),
-        locked,
-        wasJustLocked: locked && !user.locked,
-        remainingSignInAttempts: calculateRemainingSignInAttempts(
-          failedSignInAttempts,
-          this.config.maxFailedSignInAttempts,
-        ),
+        ...publicUser(currentUser),
+        wasJustLocked,
         authenticationFailed: true,
       };
     }
@@ -401,7 +412,7 @@ export class UserStore {
   async linkSsoId(userId: string, ssoId: string): Promise<void> {
     const response: dbQueryResponse = await queryTable(
       { ...this.config.database, logger: this.config.logger },
-      `UPDATE ${usersTable} SET ssoId = ? WHERE id = ? AND active = 1`,
+      `UPDATE ${usersTable} SET ssoId = ? WHERE id = ? AND active = 1 AND (ssoId IS NULL OR ssoId = '')`,
       [ssoId, userId],
     );
     if (!response.results || Array.isArray(response.results) || (response.results as ResultSetHeader).affectedRows === 0) {

@@ -833,7 +833,7 @@ describe('authentication routes', () => {
     expect(decodeJwt(cookie(callback, 'test_access')!).email).toBe('alice@example.test');
   });
 
-  it('links an existing account using either SAML or requested SSO email', async () => {
+  it('requires an authenticated existing account to link a pending SSO identity', async () => {
     const { app, users } = await buildApp();
     const agent = request.agent(app);
     const csrf = await agent.get('/csrf').expect(200);
@@ -856,7 +856,7 @@ describe('authentication routes', () => {
     const callbackUrl = new URL(shibbolethLogin.searchParams.get('target')!);
 
     const linkSsoId = jest.spyOn(users, 'linkSsoId');
-    const callback = await request(app).get(`${callbackUrl.pathname}${callbackUrl.search}`)
+    const callback = await agent.get(`${callbackUrl.pathname}${callbackUrl.search}`)
       .set(shibbolethProxyHeaders)
       .set('x-shib-eppn', 'mock:john.doe@example.test')
       .set('x-shib-mail', 'john.doe@example.test')
@@ -864,9 +864,108 @@ describe('authentication routes', () => {
       .set('x-shib-identity-provider', 'https://idp.example.test')
       .expect(302);
 
+    expect(linkSsoId).not.toHaveBeenCalled();
+    expect(callback.headers.location).toBe('/signup');
+    expect(cookie(callback, 'test_sso_pending')).toBe('sso-session');
+
+    const signInCsrf = await agent.get('/csrf').expect(200);
+    await agent.post('/sign-in')
+      .set('X-CSRF-Token', signInCsrf.headers['x-csrf-token'] as string)
+      .send({ email: 'jdoe@example.test', password: 'Passw0rd!' })
+      .expect(200);
+
+    const linkCsrf = await agent.get('/csrf').expect(200);
+    await agent.post('/sso/link')
+      .set('X-CSRF-Token', linkCsrf.headers['x-csrf-token'] as string)
+      .expect(200, { success: true, message: 'ok' });
+
     expect(linkSsoId).toHaveBeenCalledWith('1', 'mock:john.doe@example.test');
-    expect(callback.headers.location).toBe('/');
-    expect(cookie(callback, 'test_access')).toBeDefined();
+  });
+
+  it('validates pending SSO-link transactions before associating an identity', async () => {
+    const { app, cache, users } = await buildApp();
+
+    const unauthenticatedCsrf = await request(app).get('/csrf').expect(200);
+    await request(app).post('/sso/link')
+      .set('X-CSRF-Token', unauthenticatedCsrf.headers['x-csrf-token'] as string)
+      .expect(401, { success: false, message: 'Invalid access token' });
+
+    const agent = request.agent(app);
+    const signupCsrf = await agent.get('/csrf').expect(200);
+    await agent.post('/sign-up')
+      .set('X-CSRF-Token', signupCsrf.headers['x-csrf-token'] as string)
+      .send({
+        email: 'jdoe@example.test',
+        password: 'Passw0rd!',
+        givenName: 'John',
+        surName: 'Doe',
+        affiliationId: '',
+        acceptedTerms: 'true',
+      })
+      .expect(201);
+
+    jest.spyOn(users, 'findById').mockResolvedValueOnce(undefined);
+    const missingUserCsrf = await agent.get('/csrf').expect(200);
+    await agent.post('/sso/link')
+      .set('X-CSRF-Token', missingUserCsrf.headers['x-csrf-token'] as string)
+      .expect(401, { success: false, message: 'Invalid access token' });
+
+    const linkedAccount = await users.findById('1');
+    expect(linkedAccount).toBeDefined();
+    jest.spyOn(users, 'findById').mockResolvedValueOnce({
+      ...linkedAccount!,
+      ssoId: 'mock:existing@example.test',
+    });
+    const existingSsoCsrf = await agent.get('/csrf').expect(200);
+    await agent.post('/sso/link')
+      .set('X-CSRF-Token', existingSsoCsrf.headers['x-csrf-token'] as string)
+      .expect(409, { success: false, message: 'This account is already linked to an SSO identity' });
+
+    const noPendingCsrf = await agent.get('/csrf').expect(200);
+    await agent.post('/sso/link')
+      .set('X-CSRF-Token', noPendingCsrf.headers['x-csrf-token'] as string)
+      .expect(400, { success: false, message: 'No pending SSO identity to link' });
+
+    await cache.set('auth:sso-pending:invalid', JSON.stringify({ uid: 'mock:invalid@example.test' }), 600);
+    const invalidCsrf = await agent.get('/csrf').expect(200);
+    await agent.post('/sso/link')
+      .set('Cookie', 'test_sso_pending=invalid')
+      .set('X-CSRF-Token', invalidCsrf.headers['x-csrf-token'] as string)
+      .expect(400, { success: false, message: 'Invalid pending SSO identity' });
+
+    await cache.set('auth:sso-pending:malformed', 'not-json', 600);
+    const malformedCsrf = await agent.get('/csrf').expect(200);
+    await agent.post('/sso/link')
+      .set('Cookie', 'test_sso_pending=malformed')
+      .set('X-CSRF-Token', malformedCsrf.headers['x-csrf-token'] as string)
+      .expect(400, { success: false, message: 'Invalid pending SSO identity' });
+
+    await cache.set('auth:sso-pending:linked', JSON.stringify({
+      uid: 'mock:linked@example.test',
+      email: 'linked@example.test',
+      sessionId: 'sso-session',
+      entityId: 'https://idp.example.test',
+    }), 600);
+    jest.spyOn(users, 'findBySsoId').mockResolvedValueOnce({
+      id: '2',
+      email: 'linked@example.test',
+      givenName: 'Linked',
+      surName: 'User',
+      role: 'RESEARCHER',
+      affiliationId: '',
+      languageId: '',
+      ssoId: 'mock:linked@example.test',
+      acceptedTerms: true,
+      tokenVersion: 0,
+      locked: false,
+      remainingSignInAttempts: 0,
+      wasJustLocked: false,
+    });
+    const linkedCsrf = await agent.get('/csrf').expect(200);
+    await agent.post('/sso/link')
+      .set('Cookie', 'test_sso_pending=linked')
+      .set('X-CSRF-Token', linkedCsrf.headers['x-csrf-token'] as string)
+      .expect(409, { success: false, message: 'This SSO identity is already linked to another account' });
   });
 
   it('resolves database OAuth clients after the provider has started', async () => {

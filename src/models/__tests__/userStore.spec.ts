@@ -308,7 +308,8 @@ describe('UserStore', () => {
       surName: 'Example', role: 'RESEARCHER', affiliationId: 'org', languageId: 'en',
       tokenVersion: 0, acceptedTerms: true, locked: false, remainingSignInAttempts: 5,
     };
-    jest.spyOn(repository, 'findByEmail').mockResolvedValueOnce(user);
+    const findByEmail = jest.spyOn(repository, 'findByEmail');
+    findByEmail.mockResolvedValueOnce(user).mockResolvedValueOnce({ ...user, remainingSignInAttempts: 4 });
     queryTable.mockResolvedValueOnce({ results: { affectedRows: 1 }, fields: [] });
 
     await expect(repository.authenticate(row.email, 'wrong')).resolves.toMatchObject({
@@ -318,27 +319,59 @@ describe('UserStore', () => {
     });
     expect(queryTable).toHaveBeenCalledWith(
       expect.anything(),
-      expect.stringContaining('failed_sign_in_attempts = ?, locked = ?'),
-      [1, false, user.id],
+      expect.stringContaining('failed_sign_in_attempts = failed_sign_in_attempts + 1'),
+      [user.id, 4],
     );
 
-    jest.spyOn(repository, 'findByEmail').mockResolvedValueOnce({ ...user, remainingSignInAttempts: 1 });
-    queryTable.mockResolvedValueOnce({ results: { affectedRows: 1 }, fields: [] });
+    findByEmail
+      .mockResolvedValueOnce({ ...user, remainingSignInAttempts: 1 })
+      .mockResolvedValueOnce({ ...user, locked: true, remainingSignInAttempts: 0 });
+    queryTable
+      .mockResolvedValueOnce({ results: { affectedRows: 0 }, fields: [] })
+      .mockResolvedValueOnce({ results: { affectedRows: 1 }, fields: [] });
 
     await expect(repository.authenticate(row.email, 'Wrongpass1!')).resolves.toMatchObject({
       authenticationFailed: true,
       locked: true,
       remainingSignInAttempts: 0,
+      wasJustLocked: true,
     });
     expect(queryTable).toHaveBeenLastCalledWith(
       expect.anything(),
-      expect.stringContaining('failed_sign_in_attempts = ?, locked = ?'),
-      [5, true, user.id],
+      expect.stringContaining('failed_sign_in_attempts = failed_sign_in_attempts + 1, locked = 1'),
+      [user.id, 4],
     );
 
-    jest.spyOn(repository, 'findByEmail').mockResolvedValueOnce({ ...user, locked: true, remainingSignInAttempts: 0 });
+    findByEmail.mockResolvedValueOnce({ ...user, locked: true, remainingSignInAttempts: 0 });
     await expect(repository.authenticate(row.email, 'Passw0rd!')).resolves.toMatchObject({ locked: true });
-    expect(queryTable).toHaveBeenCalledTimes(2);
+    expect(queryTable).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not clear a concurrent lockout after a failed password attempt', async () => {
+    const repository = new UserStore(config as never);
+    const staleUser = {
+      id: '1', email: row.email, passwordHash: await bcrypt.hash(pepperPassword('Passw0rd!'), 4), givenName: 'User',
+      surName: 'Example', role: 'RESEARCHER', affiliationId: 'org', languageId: 'en',
+      tokenVersion: 0, acceptedTerms: true, locked: false, remainingSignInAttempts: 2,
+    };
+    jest.spyOn(repository, 'findByEmail')
+      .mockResolvedValueOnce(staleUser)
+      .mockResolvedValueOnce({ ...staleUser, locked: true, remainingSignInAttempts: 0 });
+    queryTable
+      .mockResolvedValueOnce({ results: { affectedRows: 0 }, fields: [] })
+      .mockResolvedValueOnce({ results: { affectedRows: 0 }, fields: [] });
+
+    await expect(repository.authenticate(row.email, 'wrong')).resolves.toMatchObject({
+      authenticationFailed: true,
+      locked: true,
+      wasJustLocked: false,
+      remainingSignInAttempts: 0,
+    });
+    expect(queryTable).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.stringContaining('locked = 1'),
+      [staleUser.id, 4],
+    );
   });
 
   it('resets failed login attempts after a successful SSO login', async () => {

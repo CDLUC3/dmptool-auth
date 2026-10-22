@@ -213,7 +213,7 @@ export const createApp = (
    * @returns A response with a status of 403 if the CSRF token is invalid, or calls the next middleware function if valid
    */
   app.use(async (request: Request, response: Response, next: NextFunction): Promise<void> => {
-    if (!['/sign-up', '/sign-in', '/refresh-token', '/sign-out', '/password-reset/token', '/change-password'].includes(request.path)
+    if (!['/sign-up', '/sign-in', '/refresh-token', '/sign-out', '/password-reset/token', '/change-password', '/sso/link'].includes(request.path)
       || ['GET', 'HEAD', 'OPTIONS'].includes(request.method)) {
       next();
       return;
@@ -605,6 +605,71 @@ export const createApp = (
   });
 
   /**
+   * Link a pending trusted SSO assertion to the currently authenticated account.
+   *
+   * @route POST /sso/link
+   */
+  app.post('/sso/link', nocache, async (request: Request, response: Response, next: NextFunction): Promise<void> => {
+    try {
+      const accessToken = request.cookies[config.tokens.access] as string | undefined;
+      const claims = accessToken ? await tokens.verifyAccessToken(accessToken) : undefined;
+      if (!claims) {
+        response.status(401).json({ success: false, message: 'Invalid access token' });
+        return;
+      }
+
+      const user = await users.findById(claims.id);
+      if (!user) {
+        response.status(401).json({ success: false, message: 'Invalid access token' });
+        return;
+      }
+      if (user.ssoId) {
+        response.status(409).json({ success: false, message: 'This account is already linked to an SSO identity' });
+        return;
+      }
+
+      const pendingId = request.cookies[config.tokens.ssoPending] as string | undefined;
+      const pendingLink = pendingId ? await cache.consume(`auth:sso-pending:${pendingId}`) : undefined;
+      if (!pendingId || !pendingLink) {
+        response.status(400).json({ success: false, message: 'No pending SSO identity to link' });
+        return;
+      }
+
+      let assertion: ShibbolethAssertion;
+      try {
+        assertion = JSON.parse(pendingLink) as ShibbolethAssertion;
+      } catch {
+        config.logger.warn({ userId: user.id }, 'SSO Link - malformed pending assertion');
+        response.clearCookie(config.tokens.ssoPending, { path: '/' });
+        response.status(400).json({ success: false, message: 'Invalid pending SSO identity' });
+        return;
+      }
+      const subject = assertion.uid ?? assertion.email;
+      if (!subject || !assertion.email || !assertion.sessionId || !assertion.entityId) {
+        config.logger.warn({ userId: user.id }, 'SSO Link - invalid pending assertion');
+        response.clearCookie(config.tokens.ssoPending, { path: '/' });
+        response.status(400).json({ success: false, message: 'Invalid pending SSO identity' });
+        return;
+      }
+
+      const linkedUser = await users.findBySsoId(subject);
+      if (linkedUser) {
+        config.logger.warn({ userId: user.id, subject }, 'SSO Link - identity already linked');
+        response.clearCookie(config.tokens.ssoPending, { path: '/' });
+        response.status(409).json({ success: false, message: 'This SSO identity is already linked to another account' });
+        return;
+      }
+
+      await users.linkSsoId(user.id, subject);
+      response.clearCookie(config.tokens.ssoPending, { path: '/' });
+      config.logger.info({ userId: user.id, subject, entityId: assertion.entityId }, 'SSO Link - identity linked');
+      response.status(200).json({ success: true, message: 'ok' });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /**
    * Check if an email address is associated with an SSO entity.
    *
    * @route GET /sso-check
@@ -631,9 +696,12 @@ export const createApp = (
     // Find the entity id for the user. If no user was found OR the user does not
     // have an ssoId, then we will look up the entity id by email. Otherwise, we
     // will look it up by the user's affiliationId.
-    let ssoEntity: SsoEntityRow | undefined = !user || !user.ssoId
-      ? await users.findSsoEntityIdByEmail(email)
-      : await users.findSsoEntityIdByURI(user.affiliationId);
+    let ssoEntity: SsoEntityRow | undefined = user?.ssoId
+        ? await users.findSsoEntityIdByURI(user.affiliationId)
+        : undefined;
+    if (!ssoEntity?.ssoEntityId || !ssoEntity.displayName) {
+      ssoEntity = await users.findSsoEntityIdByEmail(email);
+    }
 
     if (!ssoEntity || !ssoEntity.ssoEntityId || !ssoEntity.displayName) {
       config.logger.warn({ email }, 'SSO Check - no entityId found for email');
@@ -720,25 +788,18 @@ export const createApp = (
         return;
       }
 
-      // Check if the user is already linked to an SSO account. If not, check if there is a pending SSO login attempt
-      // for the given attemptId.
+      // Consume the initiating request's caller-provided email. It may inform the
+      // IdP selection but must never be treated as proof of account ownership.
       const attemptId = typeof request.query.attempt === 'string' ? request.query.attempt : undefined;
-      const requestedEmail = attemptId
-        ? await cache.consume(`auth:sso-login-attempt:${attemptId}`)
-        : undefined;
+      if (attemptId) await cache.consume(`auth:sso-login-attempt:${attemptId}`);
 
-      // If the user is not found by SSO ID, check if there is a user with the requested email
-      // and link them to the SSO ID.
+      // Auto-link only when the IdP's asserted email identifies an unlinked account.
       let user: PublicUser | undefined = await users.findBySsoId(subject);
       if (!user) {
-        const emails = [...new Set([assertion.email, requestedEmail].filter((email): email is string => Boolean(email)))];
-        for (const email of emails) {
-          const matchingUser = await users.findByEmail(email);
-          if (matchingUser) {
-            await users.linkSsoId(matchingUser.id, subject);
-            user = matchingUser;
-            break;
-          }
+        const matchingUser = await users.findByEmail(assertion.email);
+        if (matchingUser && !matchingUser.ssoId) {
+          await users.linkSsoId(matchingUser.id, subject);
+          user = matchingUser;
         }
       }
 
