@@ -623,17 +623,14 @@ export const createApp = (
       return;
     }
 
-    // See if there is already a user with that email address
-    const user: PublicUser | undefined = await users.findByEmail(email);
-
-    // Find the entity id for the user. If no user was found OR the user does not
-    // have an ssoId, then we will look up the entity id by email. Otherwise, we
-    // will look it up by the user's affiliationId.
-    let ssoEntity: SsoEntityRow | undefined = user?.ssoId
-        ? await users.findSsoEntityIdByURI(user.affiliationId)
-        : undefined;
+    // First see if the incoming email domain is associated with an SSO entity.
+    let ssoEntity: SsoEntityRow | undefined = await users.findSsoEntityIdByEmail(email);
     if (!ssoEntity?.ssoEntityId || !ssoEntity.displayName) {
-      ssoEntity = await users.findSsoEntityIdByEmail(email);
+      // No matching SSO entity found for the email, check if the user exists and has an SSO entity associated with their account
+      const user: PublicUser | undefined = await users.findByEmail(email);
+      if (user) {
+        ssoEntity = await users.findSsoEntityIdByEmail(email);
+      }
     }
 
     if (!ssoEntity || !ssoEntity.ssoEntityId || !ssoEntity.displayName) {
@@ -761,7 +758,7 @@ export const createApp = (
     try {
       if (!hasTrustedShibbolethProxy(request.headers, config.shibbolethProxySecret)) {
         config.logger.warn({ params: request.params }, 'SSO Callback - untrusted proxy');
-        response.status(403).json({ success: false, message: 'Untrusted Shibboleth proxy' });
+        response.status(401).json({ success: false, message: 'Untrusted Shibboleth proxy' });
         return;
       }
 
@@ -787,6 +784,14 @@ export const createApp = (
       let user: PublicUser | undefined = await users.findBySsoId(subject);
       if (!user) {
         const matchingUser = await users.findByEmail(assertion.email);
+
+        // If the account is locked throw an error and do not link the SSO identity to the account.
+        if (matchingUser && matchingUser.locked) {
+          config.logger.warn({ email: assertion.email }, 'SSO Callback - account is locked');
+          response.status(401).json({ success: false, message: 'Account is locked' });
+          return;
+        }
+
         if (matchingUser && !matchingUser.ssoId) {
           await users.linkSsoId(matchingUser.id, subject);
           user = matchingUser;
@@ -800,13 +805,6 @@ export const createApp = (
         await cache.set(`auth:sso-pending:${signupId}`, JSON.stringify(assertion), 600);
         response.cookie(config.tokens.ssoPending, signupId, cookieOptions(config.cookieSecure, 600));
         response.status(302).location('/signup').send();
-        return;
-      }
-
-      // Check if the user's account is locked and respond with an error if so
-      if (user.locked) {
-        config.logger.debug({ user }, 'SSO Callback - user account locked');
-        response.status(403).json({ success: false, message: 'Your account has been locked' });
         return;
       }
 

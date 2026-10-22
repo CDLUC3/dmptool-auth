@@ -646,13 +646,13 @@ describe('authentication routes', () => {
 
   it('checks SSO support and uses the returned entity ID to start the SSO workflow', async () => {
     const { app, users } = await buildApp();
+    const findSsoEntityIdByURI = jest.spyOn(users, 'findSsoEntityIdByURI');
     jest.spyOn(users, 'findSsoEntityIdByEmail')
-      .mockResolvedValueOnce({
+      .mockResolvedValue({
         affiliationId: 'https://ror.org/example',
         displayName: 'Example University',
         ssoEntityId: 'https://idp.example.test',
-      })
-      .mockResolvedValueOnce(undefined);
+      });
 
     const ssoCheck = await request(app).get('/sso-check')
       .query({ email: 'alice@example.test' })
@@ -664,11 +664,40 @@ describe('authentication routes', () => {
       });
     expect(ssoCheck.headers['cache-control']).toContain('no-store');
 
+    jest.spyOn(users, 'findByEmail').mockResolvedValue({
+      id: 'sso-linked-user',
+      email: 'linked@personal.test',
+      givenName: 'Linked',
+      surName: 'User',
+      role: 'RESEARCHER',
+      affiliationId: 'https://ror.org/private-affiliation',
+      languageId: 'en',
+      ssoId: 'mock:linked@personal.test',
+    });
+    jest.spyOn(users, 'findSsoEntityIdByEmail').mockResolvedValue({
+      affiliationId: 'https://ror.org/domain-affiliation',
+      displayName: 'Domain University',
+      ssoEntityId: 'https://idp.domain.test',
+    });
+    const accountIndependentCheck = await request(app).get('/sso-check')
+      .query({ email: 'linked@personal.test' })
+      .expect(200, {
+        success: true,
+        email: 'linked@personal.test',
+        entityId: 'https://idp.domain.test',
+        displayName: 'Domain University',
+      });
+    expect(accountIndependentCheck.headers['cache-control']).toContain('no-store');
+    expect(findSsoEntityIdByURI).not.toHaveBeenCalled();
+
     const passthrough = await request(app).post('/sso')
       .send({ email: ssoCheck.body.email, entityId: ssoCheck.body.entityId })
       .expect(302);
     expect(passthrough.headers.location).toContain('entityID=https%3A%2F%2Fidp.example.test');
 
+    jest.spyOn(users, 'findSsoEntityIdByEmail')
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined);
     await request(app).post('/sso-check')
       .send({ email: 'nobody@missing.test' })
       .expect(404, { success: false, message: 'No SSO entityId found for this email' });
@@ -709,7 +738,7 @@ describe('authentication routes', () => {
       .set('x-shib-session-id', 'sso-session')
       .set('x-shib-identity-provider', 'https://idp.example.test')
       .set('x-shib-mail', 'alice@example.test')
-      .expect(403, { success: false, message: 'Untrusted Shibboleth proxy' });
+      .expect(401, { success: false, message: 'Untrusted Shibboleth proxy' });
   });
 
   it('rejects Shibboleth headers missing an entityId', async () => {
@@ -719,7 +748,7 @@ describe('authentication routes', () => {
       .set('x-shib-eppn', 'alice@example.test')
       .set('x-shib-session-id', 'sso-session')
       .set('x-shib-mail', 'alice@example.test')
-      .expect(403, { success: false, message: 'Untrusted Shibboleth proxy' });
+      .expect(401, { success: false, message: 'Untrusted Shibboleth proxy' });
   });
 
   it('rejects Shibboleth headers missing an Shibboleth sessionId', async () => {
@@ -729,7 +758,7 @@ describe('authentication routes', () => {
       .set('x-shib-eppn', 'alice@example.test')
       .set('x-shib-identity-provider', 'https://idp.example.test')
       .set('x-shib-mail', 'alice@example.test')
-      .expect(403, { success: false, message: 'Untrusted Shibboleth proxy' });
+      .expect(401, { success: false, message: 'Untrusted Shibboleth proxy' });
   });
 
   it('rejects malformed trusted-proxy secrets and reports invalid access cookies during sign-out', async () => {
@@ -741,7 +770,7 @@ describe('authentication routes', () => {
       .set('x-shib-identity-provider', 'https://idp.example.test')
       .set('x-shib-eppn', 'alice@example.test')
       .set('x-shib-mail', 'alice@example.test')
-      .expect(403, { success: false, message: 'Untrusted Shibboleth proxy' });
+      .expect(401, { success: false, message: 'Untrusted Shibboleth proxy' });
 
     const csrf = await request(app).get('/csrf').expect(200);
     await request(app).post('/sign-out')
@@ -1333,7 +1362,8 @@ describe('authentication routes', () => {
       .set('x-shib-mail', 'locked@example.test')
       .set('x-shib-identity-provider', 'https://idp.example.test')
       .set('x-shib-session-id', 'locked-session')
-      .expect(403, { success: false, message: 'Your account has been locked' });
+      .expect(302)
+      .expect('Location', '/');
 
     jest.spyOn(provider, 'interactionDetails').mockRejectedValueOnce(new Error('Interaction unavailable'));
     await request(app).get('/interaction/failed').expect(500, { success: false, message: 'Internal server error' });
