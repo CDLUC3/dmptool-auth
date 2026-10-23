@@ -290,7 +290,9 @@ export const createApp = (
       // If this is a pending SSO signup, we will have a pending SSO token in the cookies.
       // We need to verify that token and extract the assertion from it.
       const pendingSSOToken: string | undefined = request.cookies[`${config.tokens.ssoPending}`] as string | undefined;
-      const pendingClaim: PendingSSOSignupClaim | undefined = await tokens.verifyPendingSSOSignupToken(pendingSSOToken);
+      const pendingClaim: PendingSSOSignupClaim | undefined = pendingSSOToken
+        ? await tokens.verifyPendingSSOSignupToken(pendingSSOToken)
+        : undefined;
       const assertion: ShibbolethAssertion | undefined = pendingClaim
         ? await tokens.getPendingSSOSignupAssertion(pendingClaim.signupId)
         : undefined;
