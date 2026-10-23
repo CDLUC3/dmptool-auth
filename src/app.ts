@@ -286,22 +286,34 @@ export const createApp = (
   app.post('/sign-up', nocache, async (request: Request, response: Response, next: NextFunction): Promise<void> => {
     try {
       const body = request.body as Record<string, string | undefined>;
-      const pendingSignupId = request.cookies[`${config.tokens.ssoPending}`] as string | undefined;
-      const pendingSignup: string | undefined = pendingSignupId
-        ? await cache.get(`auth:sso-pending:${pendingSignupId}`)
+
+      // If this is a pending SSO signup, we will have a pending SSO token in the cookies.
+      // We need to verify that token and extract the assertion from it.
+      const pendingSSOToken: string | undefined = request.cookies[`${config.tokens.ssoPending}`] as string | undefined;
+      const pendingClaim: PendingSSOSignupClaim | undefined = await tokens.verifyPendingSSOSignupToken(pendingSSOToken);
+      const assertion: ShibbolethAssertion | undefined = pendingClaim
+        ? await tokens.getPendingSSOSignupAssertion(pendingClaim.signupId)
         : undefined;
-      const assertion: ShibbolethAssertion | undefined = pendingSignup ? JSON.parse(pendingSignup) as ShibbolethAssertion : undefined;
-      const assertionSubject: string | undefined = assertion?.uid ?? assertion?.email;
-      const email: string | undefined = assertion?.email ?? body.email;
-      const password: string | undefined = body.password;
-      const givenName: string | undefined = body.givenName ?? assertion?.givenName;
-      const surName: string | undefined = body.surName ?? assertion?.surName;
-      const affiliationId: string | undefined = body.affiliationId;
+
+      const email: string | undefined = body.email;
+      let password: string | undefined = body.password;
+      const givenName: string | undefined = body.givenName;
+      const surName: string | undefined = body.surName;
+      const affiliationId: string | undefined = body.affiliationId || assertion?.affiliation;
       const acceptedTerms: boolean = typeof body.acceptedTerms === 'string'
           ? ['1', 'true', 'yes'].includes(body.acceptedTerms.toLowerCase())
           : Boolean(body.acceptedTerms);
       const languageId: string | undefined = body.languageId;
-      const ssoId: string | undefined = assertionSubject ?? body.ssoId;
+      const ssoId: string | undefined = assertion?.uid;
+
+console.log('Sign up received with', pendingSSOToken, assertion, ssoId, email)
+
+      // If this is a pending SSO signup, no password will be provided so we should
+      // generate a random password for the user
+      if (pendingSSOToken && ssoId && !password) {
+        password = randomUUID().replaceAll('-', '');
+      }
+
       if (!email || !password || !givenName || !surName) {
         response.status(400).json({ success: false, message: 'email, password, givenName, and surName are required' });
         return;
@@ -339,8 +351,9 @@ export const createApp = (
 
       const issued: AuthTokens = await tokens.issue(config.audienceUI, user);
       writeTokens(response, issued, config);
-      if (pendingSignupId) {
-        await cache.del([`auth:sso-pending:${pendingSignupId}`]);
+      if (pendingClaim) {
+        // Remove the pending SSO assertion from the cache
+        await cache.del([`auth:sso-pending:${pendingClaim.signupId}`]);
         response.clearCookie(config.tokens.ssoPending, { path: '/' });
       }
       config.logger.debug({ email }, 'Sign up - user created successfully');
@@ -388,6 +401,27 @@ export const createApp = (
         config.logger.debug({ email, message: errMessage }, 'Sign in - failed');
         response.status(401).json({ success: false, message: errMessage });
         return;
+      }
+
+      // If this is a pending SSO signup, we will have a pending SSO token in the cookies.
+      // We need to verify that token and extract the assertion from it.
+      const pendingSSOToken: string | undefined = request.cookies[`${config.tokens.ssoPending}`] as string | undefined;
+
+      if (pendingSSOToken && !user.ssoId) {
+        const pendingClaim: PendingSSOSignupClaim | undefined = await tokens.verifyPendingSSOSignupToken(pendingSSOToken);
+        const assertion: ShibbolethAssertion | undefined = pendingClaim
+            ? await tokens.getPendingSSOSignupAssertion(pendingClaim.signupId)
+            : undefined;
+
+        if (assertion && assertion.uid) {
+          // Link the SSO account to the existing user account
+          await users.linkSsoId(user.id, assertion.uid);
+        }
+
+        // Consume the pending SSO token and remove it from the cache
+        if (pendingClaim) {
+          await cache.del([`auth:sso-pending:${pendingClaim.signupId}`]);
+        }
       }
 
       // Issue new access and refresh tokens for the authenticated user

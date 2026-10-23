@@ -138,6 +138,19 @@ export class TokenService {
   }
 
   /**
+   * Retrieve the original SAML assertion for a pending SSO sign-up from the cache.
+   *
+   * @param signupId the unique identifier for the pending SSO sign-up
+   * @returns a Promise that resolves to the ShibbolethAssertion if found, or undefined if not found
+   */
+  async getPendingSSOSignupAssertion(signupId: string): Promise<ShibbolethAssertion | undefined> {
+    const record: string | undefined = await this.cache.get(`auth:sso-pending:${signupId}`);
+    if (!record) return undefined;
+
+    return JSON.parse(record) as ShibbolethAssertion;
+  }
+
+  /**
    * Verify a current, pending SSO sign-up token.
    */
   async verifyPendingSSOSignupToken(token: string): Promise<PendingSSOSignupClaim | undefined> {
