@@ -791,6 +791,8 @@ export const createApp = (
         return;
       }
 
+console.log('RAW HEADERS:', request.headers);
+
       const assertion: ShibbolethAssertion = assertionFromHeaders(request.headers);
 
       // Check that the required Shibboleth identity headers are present. If any are missing, return an error response.
@@ -800,6 +802,8 @@ export const createApp = (
         response.status(400).json({ success: false, message: 'Missing Shibboleth identity headers' });
         return;
       }
+
+console.log('ASSERTION:', assertion);
 
       // Find the SSO entity info for the given entityId. If no entity info is found, return an error response.
       const entityInfo: SsoEntityRow | undefined = await users.findSsoEntityIdById(assertion.entityId);
@@ -831,6 +835,10 @@ export const createApp = (
       // information the user will need to finish the sign-up process and redirect to the
       // sign-up page
       if (!user) {
+        // Splice in the affiliation info
+        assertion.displayName = entityInfo.displayName;
+        assertion.affiliation = entityInfo.affiliationId;
+
         config.logger.debug({ subject }, 'SSO Callback - no matching user found');
         const token: string = await tokens.issuePendingSSOSignupToken(config.audienceUI, assertion);
         response.cookie(config.tokens.ssoPending, token, cookieOptions(config.cookieSecure, 600));
