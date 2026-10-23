@@ -313,7 +313,7 @@ console.log('BODY in sign-up:', body);
       // If this is a pending SSO signup, no password will be provided so we should
       // generate a random password for the user
       if (pendingSSOToken && ssoId && !password) {
-        password = randomUUID().replaceAll('-', '');
+        password = users.generateRandomPassword(12);
       }
 
 console.log('Sign up received with', pendingSSOToken, assertion, ssoId, email, password?.length, givenName, surName, affiliationId);

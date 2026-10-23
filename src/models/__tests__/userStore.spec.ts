@@ -24,6 +24,23 @@ beforeEach(() => {
 });
 
 describe('UserStore', () => {
+  it.each([8, 12, 24])('generates a valid password of length %i', (length) => {
+    const repository = new UserStore(config as never);
+    const password = repository['generateRandomPassword'](length);
+
+    expect(password).toHaveLength(length);
+    expect(password).toMatch(/[A-Z]/);
+    expect(password).toMatch(/[a-z]/);
+    expect(password).toMatch(/\d/);
+    expect(password).toMatch(/[!@#$%^&*_+\-=?~]/);
+    expect(password).not.toMatch(/[(){}[\]|\\:;"'<>,./]/);
+  });
+
+  it.each([7, 8.5, NaN])('rejects invalid generated password length %s', (length) => {
+    const repository = new UserStore(config as never);
+    expect(() => repository['generateRandomPassword'](length)).toThrow(RangeError);
+  });
+
   it('creates a normalized public user and claims its outstanding collaborations', async () => {
     queryTable
       .mockResolvedValueOnce({ results: [], fields: [] })

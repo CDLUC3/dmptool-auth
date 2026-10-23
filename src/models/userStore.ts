@@ -177,6 +177,48 @@ export class UserStore {
   }
 
   /**
+   * Generates a random password of the requested length that meets the password validation criteria.
+   *
+   *  - Minimum length of 8 characters
+   *  - Contains at least one uppercase letter
+   *  - Contains at least one lowercase letter
+   *  - Contains at least one digit
+   *  - Contains at least one special character from the set: `!@#$%^&*_+-=?~`
+   *
+   * @private
+   * @param length - The desired password length (minimum 8 characters).
+   * @returns A randomly generated password string.
+   */
+  generateRandomPassword(length: number): string {
+    if (!Number.isInteger(length) || length < 8) {
+      throw new RangeError('Password length must be an integer of at least 8 characters');
+    }
+
+    const uppercaseCharacters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    const lowercaseCharacters = 'abcdefghijklmnopqrstuvwxyz';
+    const digitCharacters = '0123456789';
+    const specialCharacters = '!@#$%^&*_+-=?~';
+    const allCharacters = uppercaseCharacters + lowercaseCharacters + digitCharacters + specialCharacters;
+    const passwordCharacters = [
+      uppercaseCharacters[crypto.randomInt(uppercaseCharacters.length)],
+      lowercaseCharacters[crypto.randomInt(lowercaseCharacters.length)],
+      digitCharacters[crypto.randomInt(digitCharacters.length)],
+      specialCharacters[crypto.randomInt(specialCharacters.length)],
+      ...Array.from({ length: length - 4 }, () => allCharacters[crypto.randomInt(allCharacters.length)]),
+    ];
+
+    for (let index = passwordCharacters.length - 1; index > 0; index -= 1) {
+      const swapIndex = crypto.randomInt(index + 1);
+      [passwordCharacters[index], passwordCharacters[swapIndex]] = [
+        passwordCharacters[swapIndex],
+        passwordCharacters[index],
+      ];
+    }
+
+    return passwordCharacters.join('');
+  }
+
+  /**
    * Creates a new user account in the database with the provided input data.
    *
    * @param input - An object containing the user's email, password, and optional fields such as role,
