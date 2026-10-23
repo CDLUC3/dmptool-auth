@@ -3,7 +3,6 @@ import type { CacheInterface } from './cache.js';
 import type { KeyStore } from './models/keyStore.js';
 import type {
   PendingSSOSignupClaim,
-  PendingSSOSignupData,
   PublicUser,
   ShibbolethAssertion,
   TokenClaims
@@ -136,6 +135,17 @@ export class TokenService {
       this.pendingSSOTtlSeconds
     );
     return token;
+  }
+
+  /**
+   * Verify a current, pending SSO sign-up token.
+   */
+  async verifyPendingSSOSignupToken(token: string): Promise<PendingSSOSignupClaim | undefined> {
+    try {
+      return await this.keyStore.verifyPendingSSOSignupToken(token);
+    } catch {
+      return undefined;
+    }
   }
 
   /**

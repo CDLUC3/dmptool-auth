@@ -181,16 +181,6 @@ export interface RefreshTokenData {
   tokenVersion: number;
 }
 
-// The data stored in the cache for a pending SSO signup.
-export interface PendingSSOSignupData {
-  signupId: string;
-  email?: string;
-  givenName?: string;
-  surName?: string;
-  affiliation: string;
-  affiliationId: string;
-}
-
 // The data stored in the cache for a password reset token. This includes the user ID and the JWT ID (jti) of the access token.
 export interface TokenClaims {
   id: string;

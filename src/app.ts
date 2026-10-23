@@ -6,7 +6,14 @@ import express, { type Express, type NextFunction, type Request, type Response }
 import type { Grant, Interaction, Provider, UnknownObject } from 'oidc-provider';
 import type { CacheInterface } from './cache.js';
 import type { AuthTokens, TokenService } from './tokenService.js';
-import type { Config, PublicUser, RefreshTokenData, ShibbolethAssertion, SsoEntityRow } from './types.js';
+import type {
+  Config,
+  PendingSSOSignupClaim,
+  PublicUser,
+  RefreshTokenData,
+  ShibbolethAssertion,
+  SsoEntityRow
+} from './types.js';
 import type { SignupAttempt, UserStore } from './models/userStore.js';
 import type { KeyStore } from './models/keyStore.js';
 import type { Mail, SMTPSentMessageInfo } from "nodemailer";
@@ -658,6 +665,7 @@ export const createApp = (
    */
   app.post('/sso/link', nocache, async (request: Request, response: Response, next: NextFunction): Promise<void> => {
     try {
+      // Verify the access token from the request cookies and retrieve the associated user
       const accessToken = request.cookies[config.tokens.access] as string | undefined;
       const claims = accessToken ? await tokens.verifyAccessToken(accessToken) : undefined;
       if (!claims) {
@@ -665,6 +673,8 @@ export const createApp = (
         return;
       }
 
+      // Fetch the user associated with the access token claims and check if they exist and
+      // are not already linked to an SSO identity
       const user = await users.findById(claims.id);
       if (!user) {
         response.status(401).json({ success: false, message: 'Invalid access token' });
@@ -675,22 +685,37 @@ export const createApp = (
         return;
       }
 
-      const pendingId = request.cookies[config.tokens.ssoPending] as string | undefined;
-      const pendingLink = pendingId ? await cache.consume(`auth:sso-pending:${pendingId}`) : undefined;
-      if (!pendingId || !pendingLink) {
+      // Check for a pending SSO sign-up token in the request cookies and verify it.
+      // If the token is invalid or missing, return an error response.
+      const pendingToken = request.cookies[config.tokens.ssoPending] as string | undefined;
+      const pendingClaim: PendingSSOSignupClaim | undefined = pendingToken
+          ? await tokens.verifyPendingSSOSignupToken(pendingToken)
+          : undefined;
+      if (!pendingClaim || !pendingClaim.signupId) {
+        response.status(401).json({ success: false, message: 'Invalid pending SSO sign-up token' });
+        return;
+      }
+
+      // Check if there is a pending SSO assertion in the cache for the given signup ID
+      const pendingCacheHit: string | undefined = await cache.consume(`auth:sso-pending:${pendingClaim.signupId}`);
+      if (!pendingCacheHit) {
         response.status(400).json({ success: false, message: 'No pending SSO identity to link' });
         return;
       }
 
+      // Parse the pending SSO assertion from the cache hit.
       let assertion: ShibbolethAssertion;
       try {
-        assertion = JSON.parse(pendingLink) as ShibbolethAssertion;
+        assertion = JSON.parse(pendingCacheHit) as ShibbolethAssertion;
       } catch {
         config.logger.warn({ userId: user.id }, 'SSO Link - malformed pending assertion');
         response.clearCookie(config.tokens.ssoPending, { path: '/' });
         response.status(400).json({ success: false, message: 'Invalid pending SSO identity' });
         return;
       }
+
+      // Check that the required Shibboleth identity headers are present. If any are
+      // missing, return an error response.
       const subject = assertion.uid ?? assertion.email;
       if (!subject || !assertion.email || !assertion.sessionId || !assertion.entityId) {
         config.logger.warn({ userId: user.id }, 'SSO Link - invalid pending assertion');
@@ -699,6 +724,8 @@ export const createApp = (
         return;
       }
 
+      // Check if the SSO identity is already linked to another account.
+      // If it is, return an error response.
       const linkedUser = await users.findBySsoId(subject);
       if (linkedUser) {
         config.logger.warn({ userId: user.id, subject }, 'SSO Link - identity already linked');
@@ -707,6 +734,8 @@ export const createApp = (
         return;
       }
 
+      // Link the SSO identity to the currently authenticated user and clear the pending
+      // SSO sign-up token cookie
       await users.linkSsoId(user.id, subject);
       response.clearCookie(config.tokens.ssoPending, { path: '/' });
       config.logger.info({ userId: user.id, subject, entityId: assertion.entityId }, 'SSO Link - identity linked');
