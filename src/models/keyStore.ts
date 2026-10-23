@@ -192,8 +192,6 @@ export class KeyStore {
     const validatedAudience: string | undefined = this.validAudiences.includes(audience) ? audience : undefined;
     if (!validatedAudience) throw new Error('Invalid audience for access token');
 
-console.log('ISSUING ACCESS TOKEN - ISSUER:', this.issuer, audience);
-
     return new SignJWT({ ...claims })
       .setProtectedHeader({ alg: 'RS256', kid: activeSigningKey(this.jwks.keys)?.kid, typ: 'JWT' })
       .setIssuer(this.issuer)
@@ -262,8 +260,6 @@ console.log('ISSUING ACCESS TOKEN - ISSUER:', this.issuer, audience);
     // Make sure the specified audience is known to us
     const validatedAudience: string | undefined = this.validAudiences.includes(audience) ? audience : undefined;
     if (!validatedAudience) throw new Error('Invalid audience for access token');
-
-console.log('ISSUING PENDING SSO SIGNUP TOKEN - ISSUER:', this.issuer, audience);
 
     return new SignJWT({ ...claim })
         .setProtectedHeader({ alg: 'RS256', kid: activeSigningKey(this.jwks.keys)?.kid, typ: 'JWT' })

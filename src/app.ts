@@ -297,8 +297,6 @@ export const createApp = (
         ? await tokens.getPendingSSOSignupAssertion(pendingClaim.signupId)
         : undefined;
 
-console.log('BODY in sign-up:', body);
-
       const email: string | undefined = body.email;
       let password: string | undefined = body.password;
       const givenName: string | undefined = body.givenName;
@@ -315,8 +313,6 @@ console.log('BODY in sign-up:', body);
       if (pendingSSOToken && ssoId && !password) {
         password = users.generateRandomPassword(12);
       }
-
-console.log('Sign up received with', pendingSSOToken, assertion, ssoId, email, password?.length, givenName, surName, affiliationId);
 
       if (!email || !password || !givenName || !surName) {
         response.status(400).json({ success: false, message: 'email, password, givenName, and surName are required' });
@@ -342,8 +338,6 @@ console.log('Sign up received with', pendingSSOToken, assertion, ssoId, email, p
       if (!user || user.signupFailed) {
         config.logger.debug({ email }, 'Sign up - failure to create user');
         const generalError: string | undefined = user.errors?.general;
-
-console.log('Sign up - failure to create user', user.errors);
 
         const status: number = generalError === 'A user with this email already exists'
           ? 409 : generalError === undefined ? 400 : 500;
@@ -413,16 +407,11 @@ console.log('Sign up - failure to create user', user.errors);
       // If this is a pending SSO signup, we will have a pending SSO token in the cookies.
       // We need to verify that token and extract the assertion from it.
       const pendingSSOToken: string | undefined = request.cookies[`${config.tokens.ssoPending}`] as string | undefined;
-
-console.log('SIGN IN WITH PENDING SSO TOKEN', pendingSSOToken, user.ssoId)
-
       if (pendingSSOToken && !user.ssoId) {
         const pendingClaim: PendingSSOSignupClaim | undefined = await tokens.verifyPendingSSOSignupToken(pendingSSOToken);
         const assertion: ShibbolethAssertion | undefined = pendingClaim
             ? await tokens.getPendingSSOSignupAssertion(pendingClaim.signupId)
             : undefined;
-
-console.log('SIGN IN ASSERTION', assertion, pendingClaim)
 
         if (assertion && assertion.uid) {
           // Link the SSO account to the existing user account
@@ -836,8 +825,6 @@ console.log('SIGN IN ASSERTION', assertion, pendingClaim)
         return;
       }
 
-console.log('RAW HEADERS:', request.headers);
-
       const assertion: ShibbolethAssertion = assertionFromHeaders(request.headers);
 
       // Check that the required Shibboleth identity headers are present. If any are missing, return an error response.
@@ -881,8 +868,6 @@ console.log('RAW HEADERS:', request.headers);
         // Splice in the affiliation info
         assertion.displayName = entityInfo.displayName;
         assertion.affiliation = entityInfo.affiliationId;
-
-console.log('ASSERTION:', assertion);
 
         config.logger.debug({ subject }, 'SSO Callback - no matching user found');
         const token: string = await tokens.issuePendingSSOSignupToken(config.audienceUI, assertion);
