@@ -798,12 +798,13 @@ export const createApp = (
         }
       }
 
-      // If no user is found, store the SSO assertion in the cache and redirect to the sign-up page
+      // If no user is found, store the SSO assertion in the cache, add a cookie with the
+      // information the user will need to finish the sign-up process and redirect to the
+      // sign-up page
       if (!user) {
         config.logger.debug({ subject }, 'SSO Callback - no matching user found');
-        const signupId: string = assertion.sessionId ?? crypto.randomUUID();
-        await cache.set(`auth:sso-pending:${signupId}`, JSON.stringify(assertion), 600);
-        response.cookie(config.tokens.ssoPending, signupId, cookieOptions(config.cookieSecure, 600));
+        const token: string = await tokens.issuePendingSSOSignupToken(config.audienceUI, assertion);
+        response.cookie(config.tokens.ssoPending, token, cookieOptions(config.cookieSecure, 600));
         response.status(302).location('/signup').send();
         return;
       }

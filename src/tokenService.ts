@@ -1,7 +1,13 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import type { CacheInterface } from './cache.js';
 import type { KeyStore } from './models/keyStore.js';
-import type { PublicUser, TokenClaims } from './types.js';
+import type {
+  PendingSSOSignupClaim,
+  PendingSSOSignupData,
+  PublicUser,
+  ShibbolethAssertion,
+  TokenClaims
+} from './types.js';
 
 // Helper functions to generate cache keys for refresh tokens and revoked access tokens
 const refreshKey = (token: string): string => `auth:refresh:${token}`;
@@ -24,7 +30,8 @@ export class TokenService {
     private readonly keyStore: KeyStore,
     private readonly accessTtlSeconds = 900,
     private readonly refreshTtlSeconds: number = 60 * 60 * 24 * 30,
-    private readonly passwordResetTtlSeconds = 60 * 60 * 2,
+    private readonly passwordResetTtlSeconds: number = 60 * 60 * 2,
+    private readonly pendingSSOTtlSeconds: number = 900,
   ) {}
 
   /**
@@ -103,6 +110,32 @@ export class TokenService {
     } catch {
       return undefined;
     }
+  }
+
+  /**
+   * Create a cryptographically secure, time-limited pending SSO sign up token.
+   */
+  async issuePendingSSOSignupToken(audience: string, payload: ShibbolethAssertion): Promise<string> {
+    const signupId: string = randomUUID();
+    // just include the parts needed in the UI for the user to finish signing up
+    const claim: PendingSSOSignupClaim = {
+      signupId,
+      email: payload.email || '',
+      givenName: payload.givenName || '',
+      surName: payload.surName || '',
+      affiliation: payload.displayName || '',
+      affiliationId: payload.affiliation || '',
+    };
+    const token: string = await this.keyStore.issuePendingSSOSignupToken(audience, claim, this.pendingSSOTtlSeconds);
+
+    // Add the original SAML assertion to the cache so that we can use it later when the
+    // user completes the signup process
+    await this.cache.set(
+      `auth:sso-pending:${signupId}`,
+      JSON.stringify(payload),
+      this.pendingSSOTtlSeconds
+    );
+    return token;
   }
 
   /**

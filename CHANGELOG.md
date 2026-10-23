@@ -9,6 +9,7 @@
 - Updated the `/sso-check` to see if the user already has an sso id and then use their org or check by email domain
 - Added an `auth:sso-login-attempt` cache key to retain the email the user used to begin the `/sso/passthru` process so we can use it in `/sso/callback` to look up the user by email address if they don't have an sso id yet
 - Added a "locked out of your account" email that gets sent to the user when they are locked out of their account after too many failed login attempts
+- Updated the Pending SSO sign up token creation 
 
 ## v1.0.0
 - Initial release of the dmptool-auth service, providing authentication and authorization functionalities for the DMP Tool application.
