@@ -43,7 +43,7 @@ const assertionFromHeaders = (headers: Request['headers']): ShibbolethAssertion 
   email: headers['x-shib-mail']?.toString(),
   affiliation: headers['x-shib-affiliation']?.toString(),
   displayName: headers['x-shib-displayname']?.toString(),
-  givenName: headers['x-shib-givenname']?.toString(),
+  givenName: headers['x-shib-given-name']?.toString(),
   surName: headers['x-shib-sn']?.toString(),
   sessionId: headers['x-shib-session-id']?.toString(),
 });
@@ -803,8 +803,6 @@ console.log('RAW HEADERS:', request.headers);
         return;
       }
 
-console.log('ASSERTION:', assertion);
-
       // Find the SSO entity info for the given entityId. If no entity info is found, return an error response.
       const entityInfo: SsoEntityRow | undefined = await users.findSsoEntityIdById(assertion.entityId);
       if (!entityInfo) {
@@ -838,6 +836,8 @@ console.log('ASSERTION:', assertion);
         // Splice in the affiliation info
         assertion.displayName = entityInfo.displayName;
         assertion.affiliation = entityInfo.affiliationId;
+
+console.log('ASSERTION:', assertion);
 
         config.logger.debug({ subject }, 'SSO Callback - no matching user found');
         const token: string = await tokens.issuePendingSSOSignupToken(config.audienceUI, assertion);
