@@ -33,7 +33,7 @@ All routes are rooted at `ISSUER`. Routes marked **CSRF** require a valid `X-CSR
 | `POST` | `/password-reset` | Consumes `token`, `password`, and `passwordConfirmation` to reset a password. |
 | `POST` | `/change-password` **CSRF** | Requires a valid access-token cookie; verifies `currentPassword` and applies `newPassword` and `newPasswordConfirmation`. |
 | `GET` | `/revocations/:jti` | Reports whether an access-token JTI has been revoked. |
-| `GET`, `POST` | `/sso-check` | Looks up the email domain's configured SSO entity ID. Returns the email and entity ID when SSO is available, or `404` when it is not. |
+| `GET`, `POST` | `/sso-check` | Looks up the user and email domain's configured SSO entity ID. Returns the email and entity ID when SSO is available, or `404` when it is not. |
 | `GET`, `POST` | `/sso`, `/sso/passthru` | Requires `email` and `entityId`; redirects the browser to the local Shibboleth SP login endpoint. |
 | `GET`, `POST` | `/sso/callback`, `/sso/callback/:id` | Accepts only requests from the trusted Shibboleth proxy. Existing users receive browser auth cookies; new users receive a short-lived SSO handoff cookie and are redirected to `/signup`. |
 | `GET` | `/interaction/:uid` | Returns the pending OIDC interaction's UID, prompt, client ID, and parameters. |
@@ -215,6 +215,10 @@ The service reads all configuration from environment variables and AWS SSM Param
 ## OIDC record storage
 
 `oidc_records` is the `oidc-provider` adapter's polymorphic persistence table. `model` identifies records such as `Grant`, `AuthorizationCode`, `AccessToken`, and `Session`; `(model, id)` is its primary key. The provider-owned `payload` JSON is model-specific. `grant_id`, `uid`, `user_code`, and `expires_at` support grant revocation, interaction/device lookups, and expiration. OIDC refresh-token records use the Valkey adapter for fast rotation.
+
+## Emails
+
+The system sends out emails for password resets and account lockouts. The `HELPDESK_EMAIL` environment variable sets the "from" address. The service uses the `@dmptool/utils` emailer, which supports SMTP and AWS SES.
 
 ## Tests
 

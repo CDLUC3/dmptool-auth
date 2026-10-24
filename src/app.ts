@@ -6,11 +6,18 @@ import express, { type Express, type NextFunction, type Request, type Response }
 import type { Grant, Interaction, Provider, UnknownObject } from 'oidc-provider';
 import type { CacheInterface } from './cache.js';
 import type { AuthTokens, TokenService } from './tokenService.js';
-import type { Config, PublicUser, RefreshTokenData, ShibbolethAssertion } from './types.js';
-import type {SignupAttempt, UserStore} from './models/userStore.js';
+import type {
+  Config,
+  PendingSSOSignupClaim,
+  PublicUser,
+  RefreshTokenData,
+  ShibbolethAssertion,
+  SsoEntityRow
+} from './types.js';
+import type { SignupAttempt, UserStore } from './models/userStore.js';
 import type { KeyStore } from './models/keyStore.js';
 import type { Mail, SMTPSentMessageInfo } from "nodemailer";
-import { sendResetPasswordEmail } from "./email.js";
+import {sendAccountLockedEmail, sendResetPasswordEmail} from "./email.js";
 
 interface Dependencies {
   config: Config;
@@ -32,10 +39,11 @@ const cookieOptions = (secure: boolean, maxAge: number) => ({
 
 const assertionFromHeaders = (headers: Request['headers']): ShibbolethAssertion => ({
   uid: headers['x-shib-eppn']?.toString(),
+  entityId: headers['x-shib-identity-provider']?.toString(),
   email: headers['x-shib-mail']?.toString(),
   affiliation: headers['x-shib-affiliation']?.toString(),
   displayName: headers['x-shib-displayname']?.toString(),
-  givenName: headers['x-shib-givenname']?.toString(),
+  givenName: headers['x-shib-given-name']?.toString(),
   surName: headers['x-shib-sn']?.toString(),
   sessionId: headers['x-shib-session-id']?.toString(),
 });
@@ -96,18 +104,11 @@ const nocache = (
 const handleUserAuthErrors = (
   user: PublicUser & { authenticationFailed?: true },
 ): string | undefined => {
-  // If no user was found return a 401
-  if (!user.id) {
+  // If no user was found, their account is locked or the authentication failed
+  if (!user.id || user.locked || user.authenticationFailed) {
     return 'Invalid credentials';
   }
-  // If the user has exceeded the maximum number of failed sign-in attempts
-  if (user.locked) {
-    return 'Your account has been locked due to too many failed sign in attempts';
-  }
-  // if the user has failed with a bad password, warn them about the remaining attempts
-  if (user.authenticationFailed && user.remainingSignInAttempts > 0) {
-    return `Invalid credentials. ${user.remainingSignInAttempts} remaining attempts before your account is locked.`
-  }
+
   return undefined;
 };
 
@@ -217,7 +218,7 @@ export const createApp = (
    * @returns A response with a status of 403 if the CSRF token is invalid, or calls the next middleware function if valid
    */
   app.use(async (request: Request, response: Response, next: NextFunction): Promise<void> => {
-    if (!['/sign-up', '/sign-in', '/refresh-token', '/sign-out', '/password-reset/token', '/change-password'].includes(request.path)
+    if (!['/sign-up', '/sign-in', '/refresh-token', '/sign-out', '/password-reset/token', '/change-password', '/sso/link'].includes(request.path)
       || ['GET', 'HEAD', 'OPTIONS'].includes(request.method)) {
       next();
       return;
@@ -285,22 +286,34 @@ export const createApp = (
   app.post('/sign-up', nocache, async (request: Request, response: Response, next: NextFunction): Promise<void> => {
     try {
       const body = request.body as Record<string, string | undefined>;
-      const pendingSignupId = request.cookies[`${config.tokens.ssoPending}`] as string | undefined;
-      const pendingSignup: string | undefined = pendingSignupId
-        ? await cache.get(`auth:sso-pending:${pendingSignupId}`)
+
+      // If this is a pending SSO signup, we will have a pending SSO token in the cookies.
+      // We need to verify that token and extract the assertion from it.
+      const pendingSSOToken: string | undefined = request.cookies[`${config.tokens.ssoPending}`] as string | undefined;
+      const pendingClaim: PendingSSOSignupClaim | undefined = pendingSSOToken
+        ? await tokens.verifyPendingSSOSignupToken(pendingSSOToken)
         : undefined;
-      const assertion: ShibbolethAssertion | undefined = pendingSignup ? JSON.parse(pendingSignup) as ShibbolethAssertion : undefined;
-      const assertionSubject: string | undefined = assertion?.uid ?? assertion?.email;
-      const email: string | undefined = assertion?.email ?? body.email;
-      const password: string | undefined = body.password;
-      const givenName: string | undefined = body.givenName ?? assertion?.givenName;
-      const surName: string | undefined = body.surName ?? assertion?.surName;
-      const affiliationId: string | undefined = body.affiliationId;
+      const assertion: ShibbolethAssertion | undefined = pendingClaim
+        ? await tokens.getPendingSSOSignupAssertion(pendingClaim.signupId)
+        : undefined;
+
+      const email: string | undefined = body.email;
+      let password: string | undefined = body.password;
+      const givenName: string | undefined = body.givenName;
+      const surName: string | undefined = body.surName;
+      const affiliationId: string | undefined = body.affiliationId || assertion?.affiliation;
       const acceptedTerms: boolean = typeof body.acceptedTerms === 'string'
           ? ['1', 'true', 'yes'].includes(body.acceptedTerms.toLowerCase())
           : Boolean(body.acceptedTerms);
       const languageId: string | undefined = body.languageId;
-      const ssoId: string | undefined = assertionSubject ?? body.ssoId;
+      const ssoId: string | undefined = assertion?.uid;
+
+      // If this is a pending SSO signup, no password will be provided so we should
+      // generate a random password for the user
+      if (pendingSSOToken && ssoId && !password) {
+        password = users.generateRandomPassword(12);
+      }
+
       if (!email || !password || !givenName || !surName) {
         response.status(400).json({ success: false, message: 'email, password, givenName, and surName are required' });
         return;
@@ -316,14 +329,17 @@ export const createApp = (
         languageId: languageId ?? '',
         role: 'RESEARCHER', // We always default to RESEARCHER for new signups
         ssoId,
+        hasSSO: !!ssoId,
         acceptedTerms,
         locked: false,
+        wasJustLocked: false,
         remainingSignInAttempts: 0,
       });
 
       if (!user || user.signupFailed) {
         config.logger.debug({ email }, 'Sign up - failure to create user');
         const generalError: string | undefined = user.errors?.general;
+
         const status: number = generalError === 'A user with this email already exists'
           ? 409 : generalError === undefined ? 400 : 500;
 
@@ -337,8 +353,9 @@ export const createApp = (
 
       const issued: AuthTokens = await tokens.issue(config.audienceUI, user);
       writeTokens(response, issued, config);
-      if (pendingSignupId) {
-        await cache.del([`auth:sso-pending:${pendingSignupId}`]);
+      if (pendingClaim) {
+        // Remove the pending SSO assertion from the cache
+        await cache.del([`auth:sso-pending:${pendingClaim.signupId}`]);
         response.clearCookie(config.tokens.ssoPending, { path: '/' });
       }
       config.logger.debug({ email }, 'Sign up - user created successfully');
@@ -365,6 +382,7 @@ export const createApp = (
   app.post('/sign-in', nocache, async (request: Request, response: Response, next: NextFunction): Promise<void> => {
     try {
       const { email, password } = request.body as Record<string, string>;
+
       if (!email || !password) {
         config.logger.debug({ email }, 'Sign in - failed');
         response.status(401).json({ success: false, message: 'Invalid credentials' });
@@ -373,12 +391,38 @@ export const createApp = (
       // Authenticate the user using the provided email and password
       const user = await users.authenticate(email, password);
 
+      // If the account was just locked by this attempt, email the user notifying them
+      // of the lockout
+      if (user.wasJustLocked) {
+        await sendAccountLockedEmail(config, emailer, user.email);
+      }
+
       // Check for any authentication errors, such as invalid credentials or account lockout
       const errMessage: string | undefined = handleUserAuthErrors(user);
       if (errMessage) {
         config.logger.debug({ email, message: errMessage }, 'Sign in - failed');
         response.status(401).json({ success: false, message: errMessage });
         return;
+      }
+
+      // If this is a pending SSO signup, we will have a pending SSO token in the cookies.
+      // We need to verify that token and extract the assertion from it.
+      const pendingSSOToken: string | undefined = request.cookies[`${config.tokens.ssoPending}`] as string | undefined;
+      if (pendingSSOToken && !user.hasSSO) {
+        const pendingClaim: PendingSSOSignupClaim | undefined = await tokens.verifyPendingSSOSignupToken(pendingSSOToken);
+        const assertion: ShibbolethAssertion | undefined = pendingClaim
+            ? await tokens.getPendingSSOSignupAssertion(pendingClaim.signupId)
+            : undefined;
+
+        if (assertion && assertion.uid) {
+          // Link the SSO account to the existing user account
+          await users.linkSsoId(user.id, assertion.uid);
+        }
+
+        // Consume the pending SSO token and remove it from the cache
+        if (pendingClaim) {
+          await cache.del([`auth:sso-pending:${pendingClaim.signupId}`]);
+        }
       }
 
       // Issue new access and refresh tokens for the authenticated user
@@ -614,19 +658,39 @@ export const createApp = (
     const { email } = values as Record<string, string>;
     if (!email || !email.includes('@')) {
       config.logger.warn({ email }, 'SSO Check - invalid email');
-      response.status(400).json({ success: false, message: 'Invalid email address' });
+      response.status(400).json({
+        success: false,
+        message: 'Invalid email address'
+      });
       return;
     }
 
-    const entityId = await users.findSsoEntityId(email);
-    if (!entityId) {
+    // First see if the incoming email domain is associated with an SSO entity.
+    let ssoEntity: SsoEntityRow | undefined = await users.findSsoEntityIdByEmail(email);
+    if (!ssoEntity?.ssoEntityId || !ssoEntity.displayName) {
+      // No matching SSO entity found for the email, check if the user exists and has an SSO entity associated with their account
+      const user: PublicUser | undefined = await users.findByEmail(email);
+      if (user) {
+        ssoEntity = await users.findSsoEntityIdByEmail(email);
+      }
+    }
+
+    if (!ssoEntity || !ssoEntity.ssoEntityId || !ssoEntity.displayName) {
       config.logger.warn({ email }, 'SSO Check - no entityId found for email');
-      response.status(404).json({ success: false, message: 'No SSO entityId found for this email' });
+      response.status(404).json({
+        success: false,
+        message: 'No SSO entityId found for this email'
+      });
       return;
     }
 
-    config.logger.debug({ email, entityId }, 'SSO Check - entityId found');
-    response.status(200).json({ success: true, email, entityId });
+    config.logger.debug({ email, ssoEntity }, 'SSO Check - entityId found');
+    response.status(200).json({
+      success: true,
+      email,
+      entityId: ssoEntity.ssoEntityId,
+      displayName: ssoEntity.displayName
+    });
   });
 
   /**
@@ -638,7 +702,7 @@ export const createApp = (
    * @param next The next middleware function in the stack
    * @returns A redirect response to the SSO login page
    */
-  app.all(['/sso', '/sso/passthru'], nocache, (request: Request, response: Response) => {
+  app.all(['/sso', '/sso/passthru'], nocache, async (request: Request, response: Response): Promise<void> => {
     const values: unknown = request.method === 'GET' ? request.query : request.body;
     const { email, entityId } = values as Record<string, string>;
     if (!email || !email.includes('@')) {
@@ -652,7 +716,7 @@ export const createApp = (
       return;
     }
     const target = new URL('/sso/callback', config.issuer);
-    const queryString = `target=${encodeURIComponent(target.toString())}&entityId=${encodeURIComponent(entityId)}`;
+    const queryString = `target=${encodeURIComponent(target.toString())}&entityID=${encodeURIComponent(entityId)}`;
     config.logger.debug({ email, entityId, target, queryString }, 'SSO Passthru - initiated');
     response.redirect(302, `/Shibboleth.sso/Login?${queryString}`);
   });
@@ -671,35 +735,63 @@ export const createApp = (
     try {
       if (!hasTrustedShibbolethProxy(request.headers, config.shibbolethProxySecret)) {
         config.logger.warn({ params: request.params }, 'SSO Callback - untrusted proxy');
-        response.status(403).json({ success: false, message: 'Untrusted Shibboleth proxy' });
+        response.status(401).json({ success: false, message: 'Untrusted Shibboleth proxy' });
         return;
       }
+
       const assertion: ShibbolethAssertion = assertionFromHeaders(request.headers);
+
+      // Check that the required Shibboleth identity headers are present. If any are missing, return an error response.
       const subject: string | undefined = assertion.uid ?? assertion.email;
-      if (!subject || !assertion.email) {
+      if (!subject || !assertion.email || !assertion.sessionId || !assertion.entityId) {
         config.logger.warn({ assertion }, 'SSO Callback - missing Shibboleth identity headers');
         response.status(400).json({ success: false, message: 'Missing Shibboleth identity headers' });
         return;
       }
 
-      // Look up the user by their SSO ID (subject) in the user store
-      const user: PublicUser | undefined = await users.findBySsoId(subject);
+      // Find the SSO entity info for the given entityId. If no entity info is found, return an error response.
+      const entityInfo: SsoEntityRow | undefined = await users.findSsoEntityIdById(assertion.entityId);
+      if (!entityInfo) {
+        config.logger.error({ entityId: assertion.entityId }, 'SSO Callback - no entity info found for entityId');
+        response.status(400).json({ success: false, message: 'No SSO entity info found for this entityId' });
+        return;
+      }
+
+      // Auto-link only when the IdP's asserted email identifies an unlinked account.
+      let user: PublicUser | undefined = await users.findBySsoId(subject);
       if (!user) {
+        const matchingUser = await users.findByEmail(assertion.email);
+
+        // If the account is locked throw an error and do not link the SSO identity to the account.
+        if (matchingUser && matchingUser.locked) {
+          config.logger.warn({ email: assertion.email }, 'SSO Callback - account is locked');
+          response.status(401).json({ success: false, message: 'Account is locked' });
+          return;
+        }
+
+        if (matchingUser && !matchingUser.hasSSO) {
+          await users.linkSsoId(matchingUser.id, subject);
+          user = matchingUser;
+        }
+      }
+
+      // If no user is found, store the SSO assertion in the cache, add a cookie with the
+      // information the user will need to finish the sign-up process and redirect to the
+      // sign-up page
+      if (!user) {
+        // Splice in the affiliation info
+        assertion.displayName = entityInfo.displayName;
+        assertion.affiliation = entityInfo.affiliationId;
+
         config.logger.debug({ subject }, 'SSO Callback - no matching user found');
-        const signupId: string = assertion.sessionId ?? crypto.randomUUID();
-        await cache.set(`auth:sso-pending:${signupId}`, JSON.stringify(assertion), 600);
-        response.cookie(config.tokens.ssoPending, signupId, cookieOptions(config.cookieSecure, 600));
+        const token: string = await tokens.issuePendingSSOSignupToken(config.audienceUI, assertion);
+        response.cookie(config.tokens.ssoPending, token, cookieOptions(config.cookieSecure, 600));
         response.status(302).location('/signup').send();
         return;
       }
 
-      // Check if the user's account is locked and respond with an error if so
-      if (user.locked) {
-        config.logger.debug({ user }, 'SSO Callback - user account locked');
-        response.status(403).json({ success: false, message: 'Your account has been locked' });
-        return;
-      }
-
+      // Record the successful login for the user and issue new access and refresh tokens
+      await users.ssoLogin(user.id);
       config.logger.debug({ user }, 'SSO Callback - user authenticated');
       const issued: AuthTokens = await tokens.issue(config.audienceUI, user);
       writeTokens(response, issued, config);
