@@ -40,7 +40,7 @@ const publicUser = (user: User): PublicUser => ({
   affiliationId: user.affiliationId,
   languageId: user.languageId,
   tokenVersion: user.tokenVersion,
-  hasSSO: !!user.ssoId,
+  hasSSO: user.hasSSO,
   acceptedTerms: user.acceptedTerms,
   locked: user.locked,
   remainingSignInAttempts: user.remainingSignInAttempts,

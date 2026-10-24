@@ -1,6 +1,8 @@
 import request from 'supertest';
 import { decodeJwt } from 'jose';
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
+import bcrypt from 'bcryptjs';
+import crypto from 'node:crypto';
 import type { Config, OAuthClient } from '../types.js';
 import type { CacheInterface } from '../cache.js';
 import type { Mail, SMTPSentMessageInfo } from 'nodemailer';
@@ -837,9 +839,14 @@ describe('authentication routes', () => {
       .expect(201, { success: true, message: 'ok' });
     expect(database.findUserByEmail('alice@example.test')).toMatchObject({
       email: 'alice@example.test',
-      ssoId: 'alice@example.test',
       role: 'RESEARCHER',
     });
+    const createdUser = database.findUserByEmail('alice@example.test');
+    const pepperedSsoId = crypto
+      .createHmac('sha256', 'test-pepper-secret')
+      .update('alice@example.test')
+      .digest('hex');
+    await expect(bcrypt.compare(pepperedSsoId, createdUser!.ssoId!)).resolves.toBe(true);
     expect(cookie(signup, 'test_access')).toBeDefined();
     expect(cookie(signup, 'test_refresh')).toBeDefined();
     expect(setCookies(signup).join(';')).toContain('test_sso_pending=;');

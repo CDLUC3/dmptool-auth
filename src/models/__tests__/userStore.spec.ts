@@ -159,9 +159,11 @@ describe('UserStore', () => {
       role: 'ADMIN', acceptedTerms: true,
     } as never;
     await expect(repository.create(input)).resolves.toMatchObject({ id: '7', email: 'alice@example.test' });
-    expect(queryTable.mock.calls[0]![2]).toEqual([
-      expect.any(String), 'RESEARCHER', '', '', undefined, true, 'en-US', 'sso-1',
+    const values = queryTable.mock.calls[0]![2] as unknown[];
+    expect(values.slice(0, 7)).toEqual([
+      expect.any(String), 'RESEARCHER', '', '', undefined, true, 'en-US',
     ]);
+    await expect(bcrypt.compare(pepperPassword('sso-1'), values[7] as string)).resolves.toBe(true);
   });
 
   const row = {
@@ -177,14 +179,40 @@ describe('UserStore', () => {
     await expect(repository.findById('1')).resolves.toMatchObject({ id: '1', email: row.email });
     queryTable.mockResolvedValueOnce([{ ...row, id: '2', givenName: null, surName: null, affiliationId: null, languageId: null, ssoId: null }]);
     await expect(repository.findByEmail(' USER@EXAMPLE.TEST ')).resolves.toMatchObject({
-      id: '2', givenName: '', languageId: 'en', ssoId: undefined,
+      id: '2', givenName: '', languageId: 'en', hasSSO: false,
     });
     queryTable.mockResolvedValueOnce([row]);
-    await expect(repository.findBySsoId('sso-1')).resolves.toMatchObject({ id: '1' });
+    await expect(repository.findBySsoId('sso-1')).resolves.toMatchObject({ id: '1', hasSSO: true });
     expect(queryTable.mock.calls[1]![2]).toEqual(['user@example.test']);
+    await expect(bcrypt.compare(pepperPassword('sso-1'), queryTable.mock.calls[2]![2]![0] as string)).resolves.toBe(true);
 
     queryTable.mockResolvedValueOnce({ results: [], fields: [] });
     await expect(repository.findById('missing')).resolves.toBeUndefined();
+  });
+
+  it('migrates legacy plaintext SSO IDs after an encrypted lookup misses', async () => {
+    const repository = new UserStore(config as never);
+    queryTable
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([row])
+      .mockResolvedValueOnce({ results: { affectedRows: 1 }, fields: [] });
+
+    await expect(repository.findBySsoId(' sso-1 ')).resolves.toMatchObject({ id: '1', hasSSO: true });
+    await expect(bcrypt.compare(pepperPassword('sso-1'), queryTable.mock.calls[0]![2]![0] as string)).resolves.toBe(true);
+    expect(queryTable.mock.calls[1]![2]).toEqual([' sso-1 ']);
+    expect(queryTable.mock.calls[2]![1]).toContain('UPDATE users SET ssoId = ?');
+    expect(queryTable.mock.calls[2]![2]?.[1]).toBe('1');
+    await expect(bcrypt.compare(pepperPassword('sso-1'), queryTable.mock.calls[2]![2]![0] as string)).resolves.toBe(true);
+  });
+
+  it('returns undefined when no encrypted or legacy SSO ID matches', async () => {
+    const repository = new UserStore(config as never);
+    queryTable.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+
+    await expect(repository.findBySsoId('sso-1')).resolves.toBeUndefined();
+    expect(queryTable).toHaveBeenCalledTimes(2);
+    await expect(bcrypt.compare(pepperPassword('sso-1'), queryTable.mock.calls[0]![2]![0] as string)).resolves.toBe(true);
+    expect(queryTable.mock.calls[1]![2]).toEqual(['sso-1']);
   });
 
   it('reads SELECT rows from the queryTable response wrapper', async () => {
@@ -410,8 +438,9 @@ describe('UserStore', () => {
     expect(queryTable).toHaveBeenCalledWith(
       expect.anything(),
       expect.stringContaining('UPDATE users SET ssoId = ?'),
-      ['mock:user@example.test', '1'],
+      [expect.any(String), '1'],
     );
+    await expect(bcrypt.compare(pepperPassword('mock:user@example.test'), queryTable.mock.calls[0]![2]![0] as string)).resolves.toBe(true);
 
     queryTable.mockResolvedValueOnce({ results: { affectedRows: 0 }, fields: [] });
     await expect(repository.linkSsoId('missing', 'mock:missing@example.test'))
