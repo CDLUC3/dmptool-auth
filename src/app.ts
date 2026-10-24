@@ -632,7 +632,7 @@ export const createApp = (
   });
 
   /**
-   * Check if an email address is associated with an SSO entity.
+   * Check if an email address is associated with an affiliation and if it supports SSO
    *
    * @route GET /sso-check
    * @param request The Express request object
@@ -653,30 +653,31 @@ export const createApp = (
     }
 
     // First see if the incoming email domain is associated with an SSO entity.
-    let ssoEntity: SsoEntityRow | undefined = await users.findSsoEntityIdByEmail(email);
-    if (!ssoEntity?.ssoEntityId || !ssoEntity.displayName) {
+    let affiliation: SsoEntityRow | undefined = await users.findAffiliationByEmail(email);
+    if (!affiliation?.ssoEntityId || !affiliation.displayName) {
       // No matching SSO entity found for the email, check if the user exists and has an SSO entity associated with their account
       const user: PublicUser | undefined = await users.findByEmail(email);
       if (user) {
-        ssoEntity = await users.findSsoEntityIdByEmail(email);
+        affiliation = await users.findAffiliationByEmail(email);
       }
     }
 
-    if (!ssoEntity || !ssoEntity.ssoEntityId || !ssoEntity.displayName) {
-      config.logger.warn({ email }, 'SSO Check - no entityId found for email');
+    if (!affiliation || !affiliation.displayName) {
+      config.logger.warn({ email }, 'SSO Check - no affiliation found for email');
       response.status(404).json({
         success: false,
-        message: 'No SSO entityId found for this email'
+        message: 'No affiliation found for this email'
       });
       return;
     }
 
-    config.logger.debug({ email, ssoEntity }, 'SSO Check - entityId found');
+    config.logger.debug({ email, affiliation }, 'SSO Check - affiliation found');
     response.status(200).json({
       success: true,
       email,
-      entityId: ssoEntity.ssoEntityId,
-      displayName: ssoEntity.displayName
+      entityId: affiliation.ssoEntityId,
+      affiliationId: affiliation.affiliationId,
+      displayName: affiliation.displayName
     });
   });
 

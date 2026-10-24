@@ -655,7 +655,7 @@ describe('authentication routes', () => {
   it('checks SSO support and uses the returned entity ID to start the SSO workflow', async () => {
     const { app, users } = await buildApp();
     const findSsoEntityIdByURI = jest.spyOn(users, 'findSsoEntityIdByURI');
-    jest.spyOn(users, 'findSsoEntityIdByEmail')
+    jest.spyOn(users, 'findAffiliationByEmail')
       .mockResolvedValue({
         affiliationId: 'https://ror.org/example',
         displayName: 'Example University',
@@ -668,6 +668,7 @@ describe('authentication routes', () => {
         success: true,
         email: 'alice@example.test',
         entityId: 'https://idp.example.test',
+        affiliationId: 'https://ror.org/example',
         displayName: 'Example University',
       });
     expect(ssoCheck.headers['cache-control']).toContain('no-store');
@@ -682,7 +683,7 @@ describe('authentication routes', () => {
       languageId: 'en',
       ssoId: 'mock:linked@personal.test',
     } as never);
-    jest.spyOn(users, 'findSsoEntityIdByEmail').mockResolvedValue({
+    jest.spyOn(users, 'findAffiliationByEmail').mockResolvedValue({
       affiliationId: 'https://ror.org/domain-affiliation',
       displayName: 'Domain University',
       ssoEntityId: 'https://idp.domain.test',
@@ -693,9 +694,25 @@ describe('authentication routes', () => {
         success: true,
         email: 'linked@personal.test',
         entityId: 'https://idp.domain.test',
+        affiliationId: 'https://ror.org/domain-affiliation',
         displayName: 'Domain University',
       });
     expect(accountIndependentCheck.headers['cache-control']).toContain('no-store');
+    expect(findSsoEntityIdByURI).not.toHaveBeenCalled();
+
+    jest.spyOn(users, 'findAffiliationByEmail').mockResolvedValue({
+      affiliationId: 'https://ror.org/domain-affiliation',
+      displayName: 'Domain University',
+    });
+    const noEntityId = await request(app).get('/sso-check')
+        .query({ email: 'linked@personal.test' })
+        .expect(200, {
+          success: true,
+          email: 'linked@personal.test',
+          affiliationId: 'https://ror.org/domain-affiliation',
+          displayName: 'Domain University',
+        });
+    expect(noEntityId.headers['cache-control']).toContain('no-store');
     expect(findSsoEntityIdByURI).not.toHaveBeenCalled();
 
     const passthrough = await request(app).post('/sso')
@@ -703,12 +720,12 @@ describe('authentication routes', () => {
       .expect(302);
     expect(passthrough.headers.location).toContain('entityID=https%3A%2F%2Fidp.example.test');
 
-    jest.spyOn(users, 'findSsoEntityIdByEmail')
+    jest.spyOn(users, 'findAffiliationByEmail')
       .mockResolvedValueOnce(undefined)
       .mockResolvedValueOnce(undefined);
     await request(app).post('/sso-check')
       .send({ email: 'nobody@missing.test' })
-      .expect(404, { success: false, message: 'No SSO entityId found for this email' });
+      .expect(404, { success: false, message: 'No affiliation found for this email' });
     await request(app).get('/sso-check')
       .query({ email: 'invalid' })
       .expect(400, { success: false, message: 'Invalid email address' });

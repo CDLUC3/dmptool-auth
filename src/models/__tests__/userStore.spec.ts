@@ -66,7 +66,7 @@ describe('UserStore', () => {
       acceptedTerms: true,
       remainingSignInAttempts: 5,
       locked: false,
-    });
+    } as never);
 
     expect(user).toMatchObject({ id: '42', email: 'alice@example.test', role: 'RESEARCHER' });
     expect(user).not.toHaveProperty('passwordHash');
@@ -84,7 +84,8 @@ describe('UserStore', () => {
   ])('rejects %s before querying the database', async (_, input, field, message) => {
     const repository = new UserStore(config as never);
     const resp = await repository.create({
-      remainingSignInAttempts: 5, locked: false, givenName: 'User', surName: 'Example', affiliationId: '', languageId: 'en', role: 'RESEARCHER', ...input,
+      remainingSignInAttempts: 5, locked: false, givenName: 'User', surName: 'Example', affiliationId: '', languageId: 'en',
+      hasSSO: false, wasJustLocked: false, role: 'RESEARCHER', ...input,
     });
     expect(resp).toEqual({"errors": {[field]: message}, "signupFailed": true});
     expect(queryTable).not.toHaveBeenCalled();
@@ -102,7 +103,7 @@ describe('UserStore', () => {
     const resp = await repository.create({
       email: 'user@example.test', password, givenName: 'User', surName: 'Example',
       affiliationId: '', languageId: 'en', role: 'RESEARCHER', acceptedTerms: true,
-      remainingSignInAttempts: 5, locked: false
+      remainingSignInAttempts: 5, locked: false, hasSSO: false, wasJustLocked: false
     });
     expect(resp).toEqual({"errors": {"password": "Invalid password format"}, "signupFailed": true});
   });
@@ -112,12 +113,12 @@ describe('UserStore', () => {
     jest.spyOn(repository, 'findByEmail').mockResolvedValueOnce({
       id: '1', email: 'user@example.test', passwordHash: 'hash', givenName: '', surName: '',
       role: 'RESEARCHER', affiliationId: '', languageId: 'en', tokenVersion: 0, acceptedTerms: true,
-      remainingSignInAttempts: 5, locked: false
+      remainingSignInAttempts: 5, locked: false, wasJustLocked: false, hasSSO: false
     });
     const resp = await repository.create({
       email: 'user@example.test', password: 'Passw0rd!', givenName: 'User', surName: 'Example',
       affiliationId: '', languageId: 'en', role: 'RESEARCHER', acceptedTerms: true,
-      remainingSignInAttempts: 5, locked: false
+      hasSSO: false, wasJustLocked: false, remainingSignInAttempts: 5, locked: false
     });
     expect(resp).toEqual({"errors": {"general": "A user with this email already exists"}, "signupFailed": true});
 
@@ -126,7 +127,7 @@ describe('UserStore', () => {
     const resp2 = await repository.create({
       email: 'user@example.test', password: 'Passw0rd!', givenName: 'User', surName: 'Example',
       affiliationId: '', languageId: 'en', role: 'RESEARCHER', acceptedTerms: true,
-      remainingSignInAttempts: 5, locked: false
+      remainingSignInAttempts: 5, locked: false, wasJustLocked: false, hasSSO: false
     });
     expect(resp2).toEqual({"errors": {"general": "Something went wrong while creating your account. Please try again later."}, "signupFailed": true});
 
@@ -135,7 +136,7 @@ describe('UserStore', () => {
     const resp3 = await repository.create({
       email: 'user@example.test', password: 'Passw0rd!', givenName: '', surName: '',
       affiliationId: '', languageId: '', role: 'RESEARCHER', acceptedTerms: true,
-      remainingSignInAttempts: 5, locked: false
+      remainingSignInAttempts: 5, locked: false, wasJustLocked: false, hasSSO: false
     });
     expect(resp3).toEqual({"errors": {"general": "Unable to create your account. Please try again later."}, "signupFailed": true});
     expect(config.logger.error).toHaveBeenCalled();
@@ -147,7 +148,7 @@ describe('UserStore', () => {
     jest.spyOn(repository, 'findById').mockResolvedValue({
       id: '7', email: 'alice@example.test', givenName: '', surName: '', role: 'RESEARCHER',
       affiliationId: '', languageId: 'en-US', tokenVersion: 0, acceptedTerms: true,
-      remainingSignInAttempts: 5, locked: false
+      remainingSignInAttempts: 5, locked: false, wasJustLocked: false, hasSSO: false
     });
     queryTable
       .mockResolvedValueOnce({ results: { affectedRows: 1, insertId: 7 }, fields: [] })
@@ -232,7 +233,7 @@ describe('UserStore', () => {
       fields: [],
     });
 
-    await expect(repository.findSsoEntityIdByEmail('user@example.test')).resolves.toEqual({
+    await expect(repository.findAffiliationByEmail('user@example.test')).resolves.toEqual({
       affiliationId: 'https://ror.org/example',
       displayName: 'Example University',
       ssoEntityId: 'https://idp.example.test',
@@ -246,13 +247,13 @@ describe('UserStore', () => {
 
   it.each([
     ['invalid email', 'invalid-email', undefined],
-    ['missing SSO entity', 'user@example.test', { results: [], fields: [] }],
+    ['missing affiliation', 'user@example.test', { results: [], fields: [] }],
     ['unexpected query result', 'user@example.test', { results: { affectedRows: 0 }, fields: [] }],
   ])('returns undefined for a %s', async (_, email, queryResult) => {
     const repository = new UserStore(config as never);
     if (queryResult) queryTable.mockResolvedValueOnce(queryResult);
 
-    await expect(repository.findSsoEntityIdByEmail(email)).resolves.toBeUndefined();
+    await expect(repository.findAffiliationByEmail(email)).resolves.toBeUndefined();
     if (queryResult) expect(queryTable).toHaveBeenCalledWith(expect.anything(), expect.any(String), ['example.test']);
     else expect(queryTable).not.toHaveBeenCalled();
   });
@@ -333,7 +334,7 @@ describe('UserStore', () => {
     };
     await expect(repository.authenticate('bad-email', 'Passw0rd!')).resolves.toMatchObject({ authenticationFailed: true });
     await expect(repository.authenticate(row.email)).resolves.toMatchObject({ authenticationFailed: true });
-    jest.spyOn(repository, 'findByEmail').mockResolvedValueOnce(user);
+    jest.spyOn(repository, 'findByEmail').mockResolvedValueOnce(user as never);
     queryTable.mockResolvedValueOnce({ results: { affectedRows: 1 }, fields: [] });
     await expect(repository.authenticate(row.email, 'Passw0rd!')).resolves.toMatchObject({
       id: user.id,
@@ -354,7 +355,7 @@ describe('UserStore', () => {
       tokenVersion: 0, acceptedTerms: true, locked: false, remainingSignInAttempts: 5,
     };
     const findByEmail = jest.spyOn(repository, 'findByEmail');
-    findByEmail.mockResolvedValueOnce(user).mockResolvedValueOnce({ ...user, remainingSignInAttempts: 4 });
+    findByEmail.mockResolvedValueOnce(user as never).mockResolvedValueOnce({ ...user, remainingSignInAttempts: 4 } as never);
     queryTable.mockResolvedValueOnce({ results: { affectedRows: 1 }, fields: [] });
 
     await expect(repository.authenticate(row.email, 'wrong')).resolves.toMatchObject({
@@ -369,8 +370,8 @@ describe('UserStore', () => {
     );
 
     findByEmail
-      .mockResolvedValueOnce({ ...user, remainingSignInAttempts: 1 })
-      .mockResolvedValueOnce({ ...user, locked: true, remainingSignInAttempts: 0 });
+      .mockResolvedValueOnce({ ...user, remainingSignInAttempts: 1 } as never)
+      .mockResolvedValueOnce({ ...user, locked: true, remainingSignInAttempts: 0 } as never);
     queryTable
       .mockResolvedValueOnce({ results: { affectedRows: 0 }, fields: [] })
       .mockResolvedValueOnce({ results: { affectedRows: 1 }, fields: [] });
@@ -387,7 +388,7 @@ describe('UserStore', () => {
       [user.id, 4],
     );
 
-    findByEmail.mockResolvedValueOnce({ ...user, locked: true, remainingSignInAttempts: 0 });
+    findByEmail.mockResolvedValueOnce({ ...user, locked: true, remainingSignInAttempts: 0 } as never);
     await expect(repository.authenticate(row.email, 'Passw0rd!')).resolves.toMatchObject({ locked: true });
     expect(queryTable).toHaveBeenCalledTimes(3);
   });
@@ -400,8 +401,8 @@ describe('UserStore', () => {
       tokenVersion: 0, acceptedTerms: true, locked: false, remainingSignInAttempts: 2,
     };
     jest.spyOn(repository, 'findByEmail')
-      .mockResolvedValueOnce(staleUser)
-      .mockResolvedValueOnce({ ...staleUser, locked: true, remainingSignInAttempts: 0 });
+      .mockResolvedValueOnce(staleUser as never)
+      .mockResolvedValueOnce({ ...staleUser, locked: true, remainingSignInAttempts: 0 } as never);
     queryTable
       .mockResolvedValueOnce({ results: { affectedRows: 0 }, fields: [] })
       .mockResolvedValueOnce({ results: { affectedRows: 0 }, fields: [] });

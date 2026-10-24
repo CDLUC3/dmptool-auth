@@ -104,7 +104,7 @@ export interface OidcRow {
 export interface SsoEntityRow {
   affiliationId: string;
   displayName: string;
-  ssoEntityId: string;
+  ssoEntityId?: string;
 }
 
 // A row from the users table in the database. The fields are in camelCase to match the database schema.

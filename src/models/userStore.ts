@@ -542,12 +542,12 @@ export class UserStore {
   }
 
   /**
-   * Finds the SSO entity ID associated with the email domain of the provided email address.
+   * Finds the affiliation associated with the email domain of the provided email address.
    *
-   * @param email The email address to check for an associated SSO entity ID.
-   * @returns A Promise that resolves to the SSO entity ID and display name if found, otherwise undefined.
+   * @param email The email address to check for an associated affiliation.
+   * @returns A Promise that resolves to the affiliation and display name if found, otherwise undefined.
    */
-  async findSsoEntityIdByEmail(
+  async findAffiliationByEmail(
     email: string,
   ): Promise<SsoEntityRow | undefined> {
     if (!emailPattern.test(email)) return undefined;
@@ -562,7 +562,7 @@ export class UserStore {
       { ...this.config.database, logger: this.config.logger },
       `SELECT aed.affiliationId, a.displayName, a.ssoEntityId
        FROM affiliationEmailDomains AS aed JOIN affiliations AS a ON aed.affiliationId = a.uri
-       WHERE a.ssoEntityId IS NOT NULL AND TRIM(a.ssoEntityId) != '' AND aed.emailDomain = ? LIMIT 1;`,
+       WHERE TRIM(a.ssoEntityId) != '' AND aed.emailDomain = ? AND a.active = 1 LIMIT 1;`,
       [domain],
     );
     if (!ssoEntityRows.results || !Array.isArray(ssoEntityRows.results)) return undefined;
