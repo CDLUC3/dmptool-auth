@@ -329,6 +329,7 @@ export const createApp = (
         languageId: languageId ?? '',
         role: 'RESEARCHER', // We always default to RESEARCHER for new signups
         ssoId,
+        hasSSO: !!ssoId,
         acceptedTerms,
         locked: false,
         wasJustLocked: false,
@@ -407,7 +408,7 @@ export const createApp = (
       // If this is a pending SSO signup, we will have a pending SSO token in the cookies.
       // We need to verify that token and extract the assertion from it.
       const pendingSSOToken: string | undefined = request.cookies[`${config.tokens.ssoPending}`] as string | undefined;
-      if (pendingSSOToken && !user.ssoId) {
+      if (pendingSSOToken && !user.hasSSO) {
         const pendingClaim: PendingSSOSignupClaim | undefined = await tokens.verifyPendingSSOSignupToken(pendingSSOToken);
         const assertion: ShibbolethAssertion | undefined = pendingClaim
             ? await tokens.getPendingSSOSignupAssertion(pendingClaim.signupId)
@@ -768,7 +769,7 @@ export const createApp = (
           return;
         }
 
-        if (matchingUser && !matchingUser.ssoId) {
+        if (matchingUser && !matchingUser.hasSSO) {
           await users.linkSsoId(matchingUser.id, subject);
           user = matchingUser;
         }

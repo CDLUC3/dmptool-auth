@@ -137,12 +137,14 @@ export interface User {
   ssoId?: string;
   acceptedTerms: boolean;
   locked: boolean;
+  hasSSO: boolean;
   remainingSignInAttempts: number;
   wasJustLocked: boolean;
 }
 
-// A public user object that omits the passwordHash field. This is used when returning user data to clients.
-export type PublicUser = Omit<User, 'passwordHash'>;
+// A public user object that omits the passwordHash and ssoId fields.
+// This is used when returning user data to clients.
+export type PublicUser = Omit<User, 'passwordHash' | 'ssoId'>;
 
 // Our DB schema uses CamelCase for column names, but oidc-provider expects snake_case.
 // We define two interfaces to represent the same data in both formats.

@@ -40,7 +40,7 @@ const publicUser = (user: User): PublicUser => ({
   affiliationId: user.affiliationId,
   languageId: user.languageId,
   tokenVersion: user.tokenVersion,
-  ssoId: user.ssoId,
+  hasSSO: !!user.ssoId,
   acceptedTerms: user.acceptedTerms,
   locked: user.locked,
   remainingSignInAttempts: user.remainingSignInAttempts,
@@ -67,7 +67,7 @@ const toUser = (
   affiliationId: row.affiliationId ?? '',
   languageId: row.languageId ?? 'en',
   tokenVersion: row.tokenVersion ?? 0,
-  ssoId: row.ssoId ?? undefined,
+  hasSSO: !!row.ssoId,
   acceptedTerms: true,
   locked: row.locked ?? false,
   wasJustLocked: false,
@@ -248,6 +248,12 @@ export class UserStore {
       return { signupFailed: true, errors } as SignupAttempt;
     }
 
+    // If an SSO id is provided encrypt it before storing it in the database
+    let encryptedSsoId: string | null = null;
+    if (input.ssoId) {
+      encryptedSsoId = await this.hashPassword(input.ssoId.trim());
+    }
+
     const response: dbQueryResponse = await queryTable(
       { ...this.config.database, logger: this.config.logger },
       `INSERT INTO ${usersTable}
@@ -261,7 +267,7 @@ export class UserStore {
         input.affiliationId?.trim(),
         true,   // They wouldn't have been able to create an account without accepting the terms
         input.languageId?.trim() || 'en-US',
-        input.ssoId?.trim() ?? null,
+        encryptedSsoId,
       ],
     );
     if (!response.results || (response.results as ResultSetHeader).affectedRows === 0) {
@@ -452,10 +458,13 @@ export class UserStore {
    * @param ssoId The trusted SSO subject.
    */
   async linkSsoId(userId: string, ssoId: string): Promise<void> {
+    // Encrypt the SSO ID before storing it in the database
+    const encryptedSsoId: string | null = await this.hashPassword(ssoId.trim());
+
     const response: dbQueryResponse = await queryTable(
       { ...this.config.database, logger: this.config.logger },
       `UPDATE ${usersTable} SET ssoId = ? WHERE id = ? AND active = 1 AND (ssoId IS NULL OR ssoId = '')`,
-      [ssoId, userId],
+      [encryptedSsoId, userId],
     );
     if (!response.results || Array.isArray(response.results) || (response.results as ResultSetHeader).affectedRows === 0) {
       throw new Error(`Unable to link SSO identity for user ${userId}`);
@@ -503,13 +512,28 @@ export class UserStore {
    * @returns The user if found, otherwise undefined.
    */
   async findBySsoId(ssoId: string): Promise<PublicUser | undefined> {
-    const user: User | undefined = await this.findRaw(
-      `SELECT u.id, u.password, u.role, u.givenName, u.surName, u.affiliationId, u.languageId,
+    const encryptedSsoId: string | null = await this.hashPassword(ssoId.trim());
+
+    const sql = `SELECT u.id, u.password, u.role, u.givenName, u.surName, u.affiliationId, u.languageId,
          u.ssoId, u.tokenVersion, ue.email, u.locked, u.failed_sign_in_attempts
        FROM ${usersTable} u JOIN ${userEmailsTable} ue ON ue.userId = u.id AND ue.isPrimary = 1 
-       WHERE u.ssoId = ? AND u.active = 1 LIMIT 1`,
-      [ssoId],
-    );
+       WHERE u.ssoId = ? AND u.active = 1 LIMIT 1`;
+
+    // First try to find the encrypted version,
+    // then try to find the user by the plain SSO ID to support legacy migrated data,
+    let user: User | undefined = await this.findRaw(sql, [encryptedSsoId]);
+    if (!user) {
+      user = await this.findRaw(sql, [ssoId]);
+
+      // If we did find the unencrypted version, encrypt it for the future
+      if (user) {
+        await queryTable(
+          { ...this.config.database, logger: this.config.logger },
+          `UPDATE ${usersTable} SET ssoId = ? WHERE id = ? AND active = 1`,
+          [encryptedSsoId, user.id],
+        );
+      }
+    }
     return user ? publicUser(user) : undefined;
   }
 
