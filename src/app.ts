@@ -59,6 +59,8 @@ const hasTrustedShibbolethProxy = (headers: Request['headers'], secret: string |
 const stringArray = (value: unknown): string[] =>
   Array.isArray(value) && value.every((item): item is string => typeof item === 'string') ? value : [];
 
+const normalizeEmail = (email: string): string => email.trim().toLowerCase();
+
 /**
  * Write the access and refresh tokens to the response cookies.
  *
@@ -307,6 +309,10 @@ export const createApp = (
           : Boolean(body.acceptedTerms);
       const languageId: string | undefined = body.languageId;
       const ssoId: string | undefined = assertion?.uid;
+      // If the user is signing up with an SSO assertion, we will allow them to claim any open
+      // invitations that were sent to the email address in the assertion.
+      const claimOpenInvitations: boolean = !assertion?.email
+        || normalizeEmail(email ?? '') === normalizeEmail(assertion.email);
 
       // If this is a pending SSO signup, no password will be provided so we should
       // generate a random password for the user
@@ -334,6 +340,7 @@ export const createApp = (
         locked: false,
         wasJustLocked: false,
         remainingSignInAttempts: 0,
+        claimOpenInvitations,
       });
 
       if (!user || user.signupFailed) {
@@ -403,26 +410,6 @@ export const createApp = (
         config.logger.debug({ email, message: errMessage }, 'Sign in - failed');
         response.status(401).json({ success: false, message: errMessage });
         return;
-      }
-
-      // If this is a pending SSO signup, we will have a pending SSO token in the cookies.
-      // We need to verify that token and extract the assertion from it.
-      const pendingSSOToken: string | undefined = request.cookies[`${config.tokens.ssoPending}`] as string | undefined;
-      if (pendingSSOToken && !user.hasSSO) {
-        const pendingClaim: PendingSSOSignupClaim | undefined = await tokens.verifyPendingSSOSignupToken(pendingSSOToken);
-        const assertion: ShibbolethAssertion | undefined = pendingClaim
-            ? await tokens.getPendingSSOSignupAssertion(pendingClaim.signupId)
-            : undefined;
-
-        if (assertion && assertion.uid) {
-          // Link the SSO account to the existing user account
-          await users.linkSsoId(user.id, assertion.uid);
-        }
-
-        // Consume the pending SSO token and remove it from the cache
-        if (pendingClaim) {
-          await cache.del([`auth:sso-pending:${pendingClaim.signupId}`]);
-        }
       }
 
       // Issue new access and refresh tokens for the authenticated user
@@ -757,21 +744,47 @@ export const createApp = (
         return;
       }
 
-      // Auto-link only when the IdP's asserted email identifies an unlinked account.
+      // Get the user associated with the SSO identity.
       let user: PublicUser | undefined = await users.findBySsoId(subject);
-      if (!user) {
-        const matchingUser = await users.findByEmail(assertion.email);
+      // See if there is a current user
+      const accessToken: string | undefined = request.cookies[config.tokens.access] as string | undefined;
+      const accessClaim = accessToken ? await tokens.verifyAccessToken(accessToken) : undefined;
+      const authenticatedUser: PublicUser | undefined = accessClaim
+        ? await users.findById(accessClaim.id)
+        : undefined;
 
-        // If the account is locked throw an error and do not link the SSO identity to the account.
-        if (matchingUser && matchingUser.locked) {
-          config.logger.warn({ email: assertion.email }, 'SSO Callback - account is locked');
-          response.status(401).json({ success: false, message: 'Account is locked' });
+      // If there is a current user, then we are attempting to link the SSO identity to their account.
+      if (authenticatedUser) {
+        // If the SSO identity is already linked to another account, return an error response.
+        if (user && user.id !== authenticatedUser.id) {
+          config.logger.warn({ userId: authenticatedUser.id, subject }, 'SSO Callback - SSO identity linked to another account');
+          response.status(409).json({ success: false, message: 'SSO identity is already linked to another account' });
           return;
         }
 
-        if (matchingUser && !matchingUser.hasSSO) {
-          await users.linkSsoId(matchingUser.id, subject);
-          user = matchingUser;
+        // If the current user already has an SSO identity linked to their account, return an error response.
+        if (!user && authenticatedUser.hasSSO) {
+          config.logger.warn({ userId: authenticatedUser.id, subject }, 'SSO Callback - account already linked to an SSO identity');
+          response.status(409).json({ success: false, message: 'Account is already linked to an SSO identity' });
+          return;
+        }
+
+        // If the SSO identity is not linked to any account, link it to the current user's account.
+        if (!user) {
+          await users.linkSsoId(authenticatedUser.id, subject);
+        }
+
+        user = authenticatedUser;
+      }
+
+      // If no user is found, check if there is a matching user by email and if that account is locked.
+      // If it is locked, return an error response.
+      if (!user) {
+        const matchingUser = await users.findByEmail(assertion.email);
+        if (matchingUser?.locked) {
+          config.logger.warn({ email: assertion.email }, 'SSO Callback - account is locked');
+          response.status(401).json({ success: false, message: 'Account is locked' });
+          return;
         }
       }
 

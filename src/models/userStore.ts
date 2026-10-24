@@ -227,7 +227,10 @@ export class UserStore {
    * undefined if the creation fails.
    */
   async create(
-    input: Omit<User, 'id' | 'passwordHash' | 'tokenVersion'> & { password: string },
+    input: Omit<User, 'id' | 'passwordHash' | 'tokenVersion'> & {
+      password: string;
+      claimOpenInvitations?: boolean;
+    },
   ): Promise<SignupAttempt> {
     const errors: Record<string, string | undefined> = {};
 
@@ -300,9 +303,10 @@ export class UserStore {
       [userId, email, true, false, userId, userId],
     );
 
-    // Accept any open invitations to collaborate
-    await this.claimOpenTemplateCollaborations(email, userId);
-    await this.claimOpenProjectCollaborations(email, userId);
+    if (input.claimOpenInvitations !== false) {
+      await this.claimOpenTemplateCollaborations(email, userId);
+      await this.claimOpenProjectCollaborations(email, userId);
+    }
 
     const user: PublicUser | undefined = await this.findById(String(userId));
     if (!user) {
