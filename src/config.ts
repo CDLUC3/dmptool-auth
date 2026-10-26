@@ -214,6 +214,7 @@ export const loadConfig = async (logger: Logger): Promise<Config> => {
 
       uiAccess: Number.parseInt(process.env.UI_ACCESS_TOKEN_TTL ?? '900', 10),
       uiRefresh: Number.parseInt(process.env.UI_REFRESH_TOKEN_TTL ?? '604800', 10),
+      uiPendingSSOSignup: Number.parseInt(process.env.UI_PENDING_SSO_SIGNUP_TOKEN_TTL ?? '600', 10),
 
       oidcCode: Number.parseInt(process.env.OIDC_CODE_TTL ?? '120', 10),
       oidcAccess: Number.parseInt(process.env.OIDC_ACCESS_TOKEN_TTL ?? '900', 10),
