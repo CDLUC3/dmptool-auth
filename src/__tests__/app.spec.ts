@@ -926,7 +926,7 @@ describe('authentication routes', () => {
       .expect(302);
 
     expect(linkSsoId).toHaveBeenCalledWith('1', 'mock:john.doe@example.test');
-    expect(callback.headers.location).toBe('/account/connections');
+    expect(callback.headers.location).toBe('/account/connections?linked=true');
   });
 
   it('rejects linking a second SSO identity to an authenticated account', async () => {

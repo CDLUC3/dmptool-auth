@@ -813,7 +813,7 @@ export const createApp = (
       // If there is a valid access token, redirect to the user's profile because they were
       // linking their account, otherwise return to the home page
       response.status(302)
-        .location(accessToken ? '/account/connections' : '/')
+        .location(accessToken ? '/account/connections?linked=true' : '/')
         .send();
     } catch (error) {
       next(error);
