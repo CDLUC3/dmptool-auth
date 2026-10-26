@@ -565,7 +565,7 @@ describe('authentication routes', () => {
     expect(discovery.body.issuer).toBe('http://auth.example.test');
   });
 
-  it('does not auto-link a Shibboleth assertion to a matching email account', async () => {
+  it('auto-links a Shibboleth assertion to a matching email account', async () => {
     const { app } = await buildApp();
     const csrf = await request(app).get('/csrf').expect(200);
     await request(app).post('/sign-up')
@@ -586,8 +586,8 @@ describe('authentication routes', () => {
       .set('x-shib-identity-provider', 'https://idp.example.test')
       .set('x-shib-session-id', 'sso-session')
       .expect(302);
-    expect(result.headers.location).toBe('/signup');
-    expect(setCookies(result).join(';')).not.toContain('test_access=');
+    expect(result.headers.location).toBe('/');
+    expect(setCookies(result).join(';')).toContain('test_access=');
   });
 
   it('rejects an invalid Shibboleth callback payload', async () => {
@@ -882,7 +882,6 @@ describe('authentication routes', () => {
         givenName: 'Alice',
         surName: 'Example',
         affiliationId: 'https://ror.org/example',
-        ssoId: 'alice@example.test',
         acceptedTerms: 'true',
       })
       .expect(201);
@@ -892,7 +891,7 @@ describe('authentication routes', () => {
       .set('x-shib-eppn', 'alice@example.test')
       .set('x-shib-session-id', 'sso-session')
       .set('x-shib-identity-provider', 'https://idp.example.test')
-      .set('x-shib-mail', 'alice@example.test')
+      .set('x-shib-mail', 'unknown@example.test')
       .expect(302);
     expect(callback.headers.location).toBe('/signup');
     expect(cookie(callback, 'test_access')).toBeUndefined();

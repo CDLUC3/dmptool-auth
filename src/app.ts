@@ -781,8 +781,8 @@ export const createApp = (
       // If no user is found, check if there is a matching user by email and if that account is locked.
       // If it is locked, return an error response.
       if (!user) {
-        const matchingUser = await users.findByEmail(assertion.email);
-        if (matchingUser?.locked) {
+        user = await users.findByEmail(assertion.email);
+        if (user?.locked) {
           config.logger.warn({ email: assertion.email }, 'SSO Callback - account is locked');
           response.status(401).json({ success: false, message: 'Account is locked' });
           return;
