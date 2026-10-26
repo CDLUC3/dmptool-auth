@@ -798,7 +798,7 @@ export const createApp = (
         assertion.affiliation = entityInfo.affiliationId;
 
         config.logger.debug({ subject }, 'SSO Callback - no matching user found');
-        const token: string = await tokens.issuePendingSSOSignupToken(config.audienceUI, assertion);
+        const { token } = await tokens.issuePendingSSOSignupToken(config.audienceUI, assertion);
         response.cookie(config.tokens.ssoPending, token, cookieOptions(config.cookieSecure, 600));
         response.status(302).location('/signup').send();
         return;

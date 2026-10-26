@@ -14,7 +14,7 @@ import type {
   dbQueryResponse,
   KeyRow,
   PendingSSOSignupClaim,
-  RetiredSigningKey,
+  RetiredSigningKey, ShibbolethAssertion,
   StoredKeySet,
   TokenClaims
 } from "../types.js";
@@ -250,22 +250,31 @@ export class KeyStore {
    * Issue an access token with the given claims and expiration time.
    *
    * @param audience the audience for the access token
+   * @param signupId the unique identifier for the pending SSO sign-up
    * @param claim the claim to include in the JWT payload
    * @param expiresInSeconds the expiration time in seconds (default: 900)
    * @returns a Promise that resolves to the signed JWT string
    */
-  async issuePendingSSOSignupToken(audience: string, claim: PendingSSOSignupClaim, expiresInSeconds = 900): Promise<string> {
+  async issuePendingSSOSignupToken(audience: string, signupId: string, claim: ShibbolethAssertion, expiresInSeconds = 900): Promise<string> {
     if (!audience) throw new Error('Audience is required to issue an access token');
 
+    const pendingSsoClaim: PendingSSOSignupClaim = {
+      signupId,
+      email: claim.email || '',
+      givenName: claim.givenName || '',
+      surName: claim.surName || '',
+      affiliation: claim.displayName || '',
+      affiliationId: claim.affiliation || '',
+    }
     // Make sure the specified audience is known to us
     const validatedAudience: string | undefined = this.validAudiences.includes(audience) ? audience : undefined;
     if (!validatedAudience) throw new Error('Invalid audience for access token');
 
-    return new SignJWT({ ...claim })
+    return new SignJWT({ ...pendingSsoClaim })
         .setProtectedHeader({ alg: 'RS256', kid: activeSigningKey(this.jwks.keys)?.kid, typ: 'JWT' })
         .setIssuer(this.issuer)
         .setAudience(validatedAudience)
-        .setSubject(claim.signupId)
+        .setSubject(signupId)
         .setIssuedAt()
         .setExpirationTime(`${expiresInSeconds}s`)
         .sign(this.signingKey);

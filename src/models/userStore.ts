@@ -254,7 +254,7 @@ export class UserStore {
     // If an SSO id is provided encrypt it before storing it in the database
     let encryptedSsoId: string | null = null;
     if (input.ssoId) {
-      encryptedSsoId = await this.hashPassword(input.ssoId.trim());
+      encryptedSsoId = this.getPepperedPassword(input.ssoId);
     }
 
     const response: dbQueryResponse = await queryTable(
@@ -463,7 +463,7 @@ export class UserStore {
    */
   async linkSsoId(userId: string, ssoId: string): Promise<void> {
     // Encrypt the SSO ID before storing it in the database
-    const encryptedSsoId: string | null = await this.hashPassword(ssoId.trim());
+    const encryptedSsoId: string | null = this.getPepperedPassword(ssoId);
 
     const response: dbQueryResponse = await queryTable(
       { ...this.config.database, logger: this.config.logger },
@@ -516,8 +516,7 @@ export class UserStore {
    * @returns The user if found, otherwise undefined.
    */
   async findBySsoId(ssoId: string): Promise<PublicUser | undefined> {
-    const encryptedSsoId: string | null = await this.hashPassword(ssoId.trim());
-
+    const encryptedSsoId: string | null = this.getPepperedPassword(ssoId);
     const sql = `SELECT u.id, u.password, u.role, u.givenName, u.surName, u.affiliationId, u.languageId,
          u.ssoId, u.tokenVersion, ue.email, u.locked, u.failed_sign_in_attempts
        FROM ${usersTable} u JOIN ${userEmailsTable} ue ON ue.userId = u.id AND ue.isPrimary = 1 

@@ -1,7 +1,6 @@
 import request from 'supertest';
 import { decodeJwt } from 'jose';
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
-import bcrypt from 'bcryptjs';
 import crypto from 'node:crypto';
 import type { Config, OAuthClient } from '../types.js';
 import type { CacheInterface } from '../cache.js';
@@ -863,7 +862,7 @@ describe('authentication routes', () => {
       .createHmac('sha256', 'test-pepper-secret')
       .update('alice@example.test')
       .digest('hex');
-    await expect(bcrypt.compare(pepperedSsoId, createdUser!.ssoId!)).resolves.toBe(true);
+    expect(pepperedSsoId).toEqual(createdUser!.ssoId!);
     expect(cookie(signup, 'test_access')).toBeDefined();
     expect(cookie(signup, 'test_refresh')).toBeDefined();
     expect(setCookies(signup).join(';')).toContain('test_sso_pending=;');

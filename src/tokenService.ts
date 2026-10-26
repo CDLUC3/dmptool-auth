@@ -114,18 +114,9 @@ export class TokenService {
   /**
    * Create a cryptographically secure, time-limited pending SSO sign up token.
    */
-  async issuePendingSSOSignupToken(audience: string, payload: ShibbolethAssertion): Promise<string> {
+  async issuePendingSSOSignupToken(audience: string, payload: ShibbolethAssertion): Promise<{ signupId: string, token: string }> {
     const signupId: string = randomUUID();
-    // just include the parts needed in the UI for the user to finish signing up
-    const claim: PendingSSOSignupClaim = {
-      signupId,
-      email: payload.email || '',
-      givenName: payload.givenName || '',
-      surName: payload.surName || '',
-      affiliation: payload.displayName || '',
-      affiliationId: payload.affiliation || '',
-    };
-    const token: string = await this.keyStore.issuePendingSSOSignupToken(audience, claim, this.pendingSSOTtlSeconds);
+    const token: string = await this.keyStore.issuePendingSSOSignupToken(audience, signupId, payload, this.pendingSSOTtlSeconds);
 
     // Add the original SAML assertion to the cache so that we can use it later when the
     // user completes the signup process
@@ -134,7 +125,7 @@ export class TokenService {
       JSON.stringify(payload),
       this.pendingSSOTtlSeconds
     );
-    return token;
+    return { signupId, token };
   }
 
   /**
