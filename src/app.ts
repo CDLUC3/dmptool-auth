@@ -448,8 +448,8 @@ export const createApp = (
       const refreshToken = request.cookies[config.tokens.refresh] as string | undefined;
       if (accessToken) {
         config.logger.debug({ accessToken }, 'Sign out - revoking access token');
-        const { id } = decodeJwt(accessToken);
-        if (typeof id === 'string') await tokens.revoke(id);
+        const { jti } = decodeJwt(accessToken);
+        if (typeof jti === 'string') await tokens.revoke(jti);
       }
       if (refreshToken) await tokens.consumeRefreshToken(refreshToken);
       config.logger.debug({ accessToken }, 'Sign out - clearing cookies');

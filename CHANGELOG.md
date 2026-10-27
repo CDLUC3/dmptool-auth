@@ -1,5 +1,8 @@
 # dmptool-auth CHANGELOG
 
+## v1.0.2
+- Updated `/sign-out` function to revoke `jti` rather than `userId`, so that user can sign out and log back in with a valid access token before the 15-minute period. Updated `revoke` and `isRevoked` in `tokenService.ts`to use `jti` rather than `userId` to revoke. Also, addressed `zod` and `body-parser` vulnerabilities.
+
 ## v1.0.1
 - Fixed mismatching `u.failedLoginAttempts` to `u.failed_sign_in_attempts` because updating password was failing
 

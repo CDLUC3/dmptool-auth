@@ -230,14 +230,14 @@ describe('authentication routes', () => {
       .expect(200);
     expect(refresh.body.success).toBe(true);
     const refreshedAccessCookie = setCookies(refresh).find((value) => value.startsWith('test_access='));
-    const refreshedUserId = decodeJwt(refreshedAccessCookie!.split(';')[0].slice('test_access='.length)).id as string;
-    await request(app).get(`/revocations/${refreshedUserId}`).expect(200, { revoked: false });
+    const refreshedJti = decodeJwt(refreshedAccessCookie!.split(';')[0].slice('test_access='.length)).jti as string;
+    await request(app).get(`/revocations/${refreshedJti}`).expect(200, { revoked: false });
 
     const signoutCsrf = await agent.get('/csrf').expect(200);
     await agent.post('/sign-out')
       .set('X-CSRF-Token', signoutCsrf.headers['x-csrf-token'] as string)
       .expect(200);
-    await request(app).get(`/revocations/${refreshedUserId}`).expect(200, { revoked: true });
+    await request(app).get(`/revocations/${refreshedJti}`).expect(200, { revoked: true });
 
     const signinCsrf = await agent.get('/csrf').expect(200);
     const signin = await agent.post('/sign-in')
@@ -514,6 +514,28 @@ describe('authentication routes', () => {
     await agent.post('/sign-in')
       .set('X-CSRF-Token', newPasswordSigninCsrf.headers['x-csrf-token'] as string)
       .send({ email: 'alice@example.test', password: 'NewPassw0rd!' })
+      .expect(200, { success: true, message: 'ok' });
+
+    // Signing out revokes only that session's access token, so a fresh sign-in can change the password again
+    const signoutCsrf = await agent.get('/csrf').expect(200);
+    await agent.post('/sign-out')
+      .set('X-CSRF-Token', signoutCsrf.headers['x-csrf-token'] as string)
+      .expect(200);
+
+    const resigninCsrf = await agent.get('/csrf').expect(200);
+    await agent.post('/sign-in')
+      .set('X-CSRF-Token', resigninCsrf.headers['x-csrf-token'] as string)
+      .send({ email: 'alice@example.test', password: 'NewPassw0rd!' })
+      .expect(200, { success: true, message: 'ok' });
+
+    const secondChangeCsrf = await agent.get('/csrf').expect(200);
+    await agent.post('/change-password')
+      .set('X-CSRF-Token', secondChangeCsrf.headers['x-csrf-token'] as string)
+      .send({
+        currentPassword: 'NewPassw0rd!',
+        newPassword: 'NewerPassw0rd!',
+        newPasswordConfirmation: 'NewerPassw0rd!',
+      })
       .expect(200, { success: true, message: 'ok' });
   });
 
