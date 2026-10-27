@@ -1,7 +1,12 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import type { CacheInterface } from './cache.js';
 import type { KeyStore } from './models/keyStore.js';
-import type { PublicUser, TokenClaims } from './types.js';
+import type {
+  PendingSSOSignupClaim,
+  PublicUser,
+  ShibbolethAssertion,
+  TokenClaims
+} from './types.js';
 
 // Helper functions to generate cache keys for refresh tokens and revoked access tokens
 const refreshKey = (token: string): string => `auth:refresh:${token}`;
@@ -24,7 +29,8 @@ export class TokenService {
     private readonly keyStore: KeyStore,
     private readonly accessTtlSeconds = 900,
     private readonly refreshTtlSeconds: number = 60 * 60 * 24 * 30,
-    private readonly passwordResetTtlSeconds = 60 * 60 * 2,
+    private readonly passwordResetTtlSeconds: number = 60 * 60 * 2,
+    private readonly pendingSSOTtlSeconds: number = 900,
   ) {}
 
   /**
@@ -100,6 +106,47 @@ export class TokenService {
     try {
       const claims: TokenClaims = await this.keyStore.verifyAccessToken(accessToken);
       return await this.isRevoked(claims.jti) ? undefined : claims;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Create a cryptographically secure, time-limited pending SSO sign up token.
+   */
+  async issuePendingSSOSignupToken(audience: string, payload: ShibbolethAssertion): Promise<{ signupId: string, token: string }> {
+    const signupId: string = randomUUID();
+    const token: string = await this.keyStore.issuePendingSSOSignupToken(audience, signupId, payload, this.pendingSSOTtlSeconds);
+
+    // Add the original SAML assertion to the cache so that we can use it later when the
+    // user completes the signup process
+    await this.cache.set(
+      `auth:sso-pending:${signupId}`,
+      JSON.stringify(payload),
+      this.pendingSSOTtlSeconds
+    );
+    return { signupId, token };
+  }
+
+  /**
+   * Retrieve the original SAML assertion for a pending SSO sign-up from the cache.
+   *
+   * @param signupId the unique identifier for the pending SSO sign-up
+   * @returns a Promise that resolves to the ShibbolethAssertion if found, or undefined if not found
+   */
+  async getPendingSSOSignupAssertion(signupId: string): Promise<ShibbolethAssertion | undefined> {
+    const record: string | undefined = await this.cache.get(`auth:sso-pending:${signupId}`);
+    if (!record) return undefined;
+
+    return JSON.parse(record) as ShibbolethAssertion;
+  }
+
+  /**
+   * Verify a current, pending SSO sign-up token.
+   */
+  async verifyPendingSSOSignupToken(token: string): Promise<PendingSSOSignupClaim | undefined> {
+    try {
+      return await this.keyStore.verifyPendingSSOSignupToken(token);
     } catch {
       return undefined;
     }

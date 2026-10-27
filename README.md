@@ -24,18 +24,18 @@ All routes are rooted at `ISSUER`. Routes marked **CSRF** require a valid `X-CSR
 | `GET` | `/healthz` | Verifies that the service can reach Valkey and returns `{ "status": "ok" }`. |
 | `GET` | `/csrf` | Creates a CSRF token, returns `ok`, and exposes it in `X-CSRF-Token`. |
 | `POST` | `/csrf/verify` | Checks, without consuming, the supplied `X-CSRF-Token`; returns `{ "valid": boolean }`. |
-| `POST` | `/sign-up` **CSRF** | Creates a `RESEARCHER` user from `email`, `password`, `givenName`, `surName`, optional `affiliationId`, `languageId`, and `acceptedTerms`; then sets browser auth cookies. An SSO handoff cookie can supply the SSO identity fields. |
+| `POST` | `/sign-up` **CSRF** | Creates a `RESEARCHER` user from `email`, `password`, `givenName`, `surName`, optional `affiliationId`, `languageId`, and `acceptedTerms`; then sets browser auth cookies. A pending SSO handoff supplies the SSO identity and a generated password when no password is submitted. It claims invitations only when the submitted email matches the asserted SSO email. |
 | `POST` | `/sign-in` **CSRF** | Authenticates `email` and `password`, then sets browser auth cookies. |
 | `POST` | `/refresh-token` **CSRF** | Consumes the refresh-token cookie and replaces both browser auth cookies. |
 | `POST` | `/sign-out` **CSRF** | Revokes the current access and refresh tokens, then clears both browser auth cookies. |
-| `POST` | `/password-reset/token` **CSRF** | Requires a valid access-token cookie and returns a one-time password-reset token. |
+| `POST` | `/password-reset/token` | Creates a one-time password-reset token for a known email address and sends it by email. |
 | `POST` | `/password-reset/verify` | Checks whether body field `token` is valid without consuming it; returns `{ "valid": boolean }`. |
 | `POST` | `/password-reset` | Consumes `token`, `password`, and `passwordConfirmation` to reset a password. |
 | `POST` | `/change-password` **CSRF** | Requires a valid access-token cookie; verifies `currentPassword` and applies `newPassword` and `newPasswordConfirmation`. |
 | `GET` | `/revocations/:jti` | Reports whether an access-token JTI has been revoked. |
-| `GET`, `POST` | `/sso-check` | Looks up the email domain's configured SSO entity ID. Returns the email and entity ID when SSO is available, or `404` when it is not. |
+| `GET`, `POST` | `/sso-check` | Looks up the supplied email domain's configured SSO entity ID. Returns the email and entity ID when SSO is available, or `404` when it is not. |
 | `GET`, `POST` | `/sso`, `/sso/passthru` | Requires `email` and `entityId`; redirects the browser to the local Shibboleth SP login endpoint. |
-| `GET`, `POST` | `/sso/callback`, `/sso/callback/:id` | Accepts only requests from the trusted Shibboleth proxy. Existing users receive browser auth cookies; new users receive a short-lived SSO handoff cookie and are redirected to `/signup`. |
+| `GET`, `POST` | `/sso/callback`, `/sso/callback/:id` | Accepts only requests from the trusted Shibboleth proxy. An asserted SSO identity signs in its linked account. A valid browser access-token cookie can link an unlinked asserted identity to that account. Otherwise, an unlinked identity receives a short-lived SSO handoff cookie and is redirected to `/signup`. |
 | `GET` | `/interaction/:uid` | Returns the pending OIDC interaction's UID, prompt, client ID, and parameters. |
 | `POST` | `/interaction/:uid` | Completes an OIDC `login` interaction with `email` and `password`, or completes the pending `consent` interaction. |
 | `GET` | `/jwks.json` | Legacy redirect to `/.well-known/jwks.json`. |
@@ -114,7 +114,7 @@ sequenceDiagram
 
 ## Browser authentication and SSO
 
-Public signup always assigns the `RESEARCHER` role; an administrator must promote users separately. Password reset tokens expire after `PASSWORD_RESET_TOKEN_TTL`.
+Public signup always assigns the `RESEARCHER` role; an administrator must promote users separately. Password reset tokens expire after `PASSWORD_RESET_TOKEN_TTL`. SSO account linking requires both a valid browser access token for the existing account and a trusted SSO assertion. The asserted email does not need to match the account's preferred email.
 
 ```mermaid
 sequenceDiagram
@@ -141,11 +141,14 @@ sequenceDiagram
         IdP-->>SP: Validated assertion
         SP->>Auth: /sso/callback + trusted X-Shib-* headers
         Auth->>MySQL: Find user by SSO ID
-        alt New SSO user
+        alt Signed in with a valid access token and no linked SSO identity
+            Auth->>MySQL: Link unlinked SSO ID to the authenticated account
+        else New SSO user
             Auth->>Valkey: Store 10-minute SSO signup handoff
             Auth-->>Browser: sso_pending_token cookie and redirect to /signup
             Browser->>Auth: POST /signup + X-CSRF-Token
             Auth->>MySQL: Create user with SSO ID
+            Note over Auth,MySQL: Claim invitations only when signup and asserted emails match
         end
     end
     Auth->>Valkey: Store refresh-token state
@@ -155,6 +158,22 @@ sequenceDiagram
     Auth-->>Browser: { valid }
     Browser->>Auth: POST /refresh-token, /signout, or password routes + X-CSRF-Token
     Auth->>Valkey: Rotate or revoke token state
+```
+
+```mermaid
+flowchart TD
+    A[Trusted /sso/callback assertion] --> B{SSO subject already linked?}
+    B -->|Yes| C[Sign in linked account]
+    B -->|No| D{Valid browser access token?}
+    D -->|No| E[Create short-lived pending SSO handoff]
+    E --> F[Redirect to /signup]
+    F --> G{Signup email matches asserted email?}
+    G -->|Yes| H[Create SSO account and claim matching invitations]
+    G -->|No| I[Create SSO account without claiming invitations]
+    D -->|Yes| J{Authenticated account has no SSO identity?}
+    J -->|Yes| K[Link asserted subject to authenticated account]
+    J -->|No| L[Return conflict]
+    K --> C
 ```
 
 ## Environment variables
@@ -168,6 +187,12 @@ The service reads all configuration from environment variables and AWS SSM Param
 | `ISSUER` | Production | `http://localhost:3000` | Public issuer URL, without a trailing slash. Must be HTTPS in production. |
 | `AUDIENCE_UI` | Yes | `my-ui` | The audience name to use for the UI access token. |
 | `AUDIENCE_API` | Yes | `my-api` | The audience name to use for the API access token. |
+| `DOMAIN` | No | `localhost` | Public application domain used by service integrations. |
+| `APPLICATION_NAME` | No | `my app` | Application name used in email content. |
+| `HELP_DESK_ADDRESS` | No | `help@example.com` | Help-desk address used in email content. |
+| `HELP_HOST` | No | `localhost` | Help-page URL used in email content. |
+| `DO_NOT_REPLY_ADDRESS` | No | `no-reply@example.com` | Sender address for service emails. |
+| `MAX_FAILED_SIGNIN_ATTEMPTS` | No | `5` | Failed password attempts before an account is locked. |
 | `DEPLOYMENT_ENV` | Deployment-specific | `DEV` | `@dmptool/utils` environment used to locate `RdsUsername` and `RdsPassword` in SSM. |
 | `AWS_REGION` | No | `us-west-2` | AWS region used for Parameter Store. |
 | `SSM_ENDPOINT` | Local only | none | Parameter Store endpoint override, such as LocalStack. Its presence disables TLS for the SSM connection. |
@@ -191,8 +216,9 @@ The service reads all configuration from environment variables and AWS SSM Param
 | `CSRF_TTL` | No | `3600` | CSRF token lifetime. |
 | `UI_ACCESS_TOKEN_TTL` | No | `900` | Browser access-token lifetime. |
 | `UI_REFRESH_TOKEN_TTL` | No | `604800` | Browser refresh-token lifetime. |
+| `UI_PENDING_SSO_SIGNUP_TOKEN_TTL` | No | `600` | Pending SSO signup-handoff lifetime. |
 | `PASSWORD_RESET_TOKEN_TTL` | No | `7200` | Password-reset token lifetime. |
-| `SHIBBOLETH_PROXY_SECRET` | **Yes when SSO is enabled** | none | Shared secret expected in `X-Shib-Proxy-Secret`. Without it, SSO callbacks return `403`. The proxy must remove externally supplied `X-Shib-*` and `X-Shib-Proxy-Secret` headers. |
+| `SHIBBOLETH_PROXY_SECRET` | **Yes when SSO is enabled** | none | Shared secret expected in `X-Shib-Proxy-Secret`. Without it, SSO callbacks return `401`. The proxy must remove externally supplied `X-Shib-*` and `X-Shib-Proxy-Secret` headers. |
 | `OAUTH2_SIGN_IN_URL` | No | none | UI URL to which OIDC interactions are redirected with `uid`; without it, interactions use `/interaction/:uid`. |
 | `OIDC_CLIENTS_JSON` | Bootstrap only | `[]` | Valid JSON array of static OAuth client objects. Used only if MySQL has no active client registrations. |
 | `OIDC_CODE_TTL` | No | `120` | Authorization-code lifetime. |
@@ -201,6 +227,8 @@ The service reads all configuration from environment variables and AWS SSM Param
 | `OIDC_GRANT_TTL` | No | `120` | OIDC grant lifetime. |
 | `OIDC_ID_TOKEN_TTL` | No | `600` | OIDC ID-token lifetime. |
 | `OIDC_INTERACTION_TTL` | No | `600` | OIDC interaction lifetime. |
+| `SES_ENDPOINT` | No | `localhost` | SMTP endpoint for the emailer. |
+| `SES_PORT` | No | `587` | SMTP endpoint port. |
 | `DB_USERS_TABLE` | No | `users` | Users table name. |
 | `DB_USER_EMAILS_TABLE` | No | `user_emails` | User email-address table name. |
 | `DB_TEMPLATE_COLLABORATORS_TABLE` | No | `template_collaborators` | Template collaborator table name. |
@@ -215,6 +243,10 @@ The service reads all configuration from environment variables and AWS SSM Param
 ## OIDC record storage
 
 `oidc_records` is the `oidc-provider` adapter's polymorphic persistence table. `model` identifies records such as `Grant`, `AuthorizationCode`, `AccessToken`, and `Session`; `(model, id)` is its primary key. The provider-owned `payload` JSON is model-specific. `grant_id`, `uid`, `user_code`, and `expires_at` support grant revocation, interaction/device lookups, and expiration. OIDC refresh-token records use the Valkey adapter for fast rotation.
+
+## Emails
+
+The system sends out emails for password resets and account lockouts. `DO_NOT_REPLY_ADDRESS` sets the sender address, and `HELP_DESK_ADDRESS` supplies the help-desk address used in message content. The service uses the `@dmptool/utils` emailer, which supports SMTP and AWS SES.
 
 ## Tests
 

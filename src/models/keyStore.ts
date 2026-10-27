@@ -9,7 +9,16 @@ import {
   SignJWT,
 } from 'jose';
 import { queryTable } from '@dmptool/utils';
-import type { Config, dbQueryResponse, KeyRow, RetiredSigningKey, StoredKeySet, TokenClaims } from "../types.js";
+import type {
+  Config,
+  dbQueryResponse,
+  KeyRow,
+  PendingSSOSignupClaim,
+  RetiredSigningKey,
+  ShibbolethAssertion,
+  StoredKeySet,
+  TokenClaims
+} from "../types.js";
 
 const keyName = 'auth:oidc:jwks';
 const authKeysTable: string = process.env.DB_AUTH_KEYS_TABLE || 'auth_keys';
@@ -237,4 +246,77 @@ export class KeyStore {
       tokenVersion: payload.tokenVersion,
     };
   }
+
+  /**
+   * Issue an access token with the given claims and expiration time.
+   *
+   * @param audience the audience for the access token
+   * @param signupId the unique identifier for the pending SSO sign-up
+   * @param claim the claim to include in the JWT payload
+   * @param expiresInSeconds the expiration time in seconds (default: 900)
+   * @returns a Promise that resolves to the signed JWT string
+   */
+  async issuePendingSSOSignupToken(audience: string, signupId: string, claim: ShibbolethAssertion, expiresInSeconds = 900): Promise<string> {
+    if (!audience) throw new Error('Audience is required to issue an access token');
+
+    const pendingSsoClaim: PendingSSOSignupClaim = {
+      signupId,
+      email: claim.email || '',
+      givenName: claim.givenName || '',
+      surName: claim.surName || '',
+      affiliation: claim.displayName || '',
+      affiliationId: claim.affiliation || '',
+    }
+    // Make sure the specified audience is known to us
+    const validatedAudience: string | undefined = this.validAudiences.includes(audience) ? audience : undefined;
+    if (!validatedAudience) throw new Error('Invalid audience for access token');
+
+    return new SignJWT({ ...pendingSsoClaim })
+        .setProtectedHeader({ alg: 'RS256', kid: activeSigningKey(this.jwks.keys)?.kid, typ: 'JWT' })
+        .setIssuer(this.issuer)
+        .setAudience(validatedAudience)
+        .setSubject(signupId)
+        .setIssuedAt()
+        .setExpirationTime(`${expiresInSeconds}s`)
+        .sign(this.signingKey);
+  }
+
+  /**
+   * Verify a pending SSO sign-up token issued by this service and return its application claims.
+   *
+   * @param token the JWT pending SSO sign-up token to verify
+   * @returns a Promise that resolves to the application claims
+   */
+  async verifyPendingSSOSignupToken(token: string): Promise<PendingSSOSignupClaim> {
+    const { alg, kid } = decodeProtectedHeader(token);
+    if (alg !== 'RS256' || !kid) throw new Error('Invalid access token header');
+    const verificationJwk: JWK | undefined = this.publicJwks().keys.find((key): boolean => key.kid === kid);
+    if (!verificationJwk) throw new Error('No public signing key is available');
+    const verificationKey = await importJWK(verificationJwk, 'RS256');
+    const { payload } = await jwtVerify(token, verificationKey, {
+      algorithms: ['RS256'],
+      issuer: this.issuer,
+      audience: this.validAudiences,
+    });
+    if (
+        (typeof payload.signupId !== 'string' && typeof payload.signupId !== 'number')
+        || typeof payload.email !== 'string'
+        || typeof payload.givenName !== 'string'
+        || typeof payload.surName !== 'string'
+        || typeof payload.affiliation !== 'string'
+        || typeof payload.affiliationId !== 'string'
+        || payload.sub !== payload.signupId
+    ) {
+      throw new Error('Invalid pending SSO sign-up token claims');
+    }
+    return {
+      signupId: payload.signupId,
+      email: payload.email,
+      givenName: payload.givenName,
+      surName: payload.surName,
+      affiliation: payload.affiliation,
+      affiliationId: payload.affiliationId,
+    };
+  }
 }
+
