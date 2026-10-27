@@ -786,6 +786,10 @@ export const createApp = (
           config.logger.warn({ email: assertion.email }, 'SSO Callback - account is locked');
           response.status(401).json({ success: false, message: 'Account is locked' });
           return;
+
+        } else  if (user?.id) {
+          // Otherwise the SAML assertion email matched one in the DB so link them
+          await users.linkSsoId(user.id, subject);
         }
       }
 
