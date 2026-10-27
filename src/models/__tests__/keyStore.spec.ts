@@ -193,17 +193,24 @@ describe('KeyStore', () => {
       email: 'user@example.test',
       givenName: 'User',
       surName: 'Example',
-      affiliation: 'Example University',
-      affiliationId: 'affiliation-1',
+      displayName: 'Example University',
+      affiliation: 'affiliation-1',
     };
 
-    const token = await store.issuePendingSSOSignupToken('https://app.example.test', claim, 60);
+    const token = await store.issuePendingSSOSignupToken('https://app.example.test', 'signup-1', claim, 60);
 
-    await expect(store.verifyPendingSSOSignupToken(token)).resolves.toEqual(claim);
-    await expect(store.issuePendingSSOSignupToken('', claim)).rejects.toThrow(
+    await expect(store.verifyPendingSSOSignupToken(token)).resolves.toEqual({
+      signupId: 'signup-1',
+      email: 'user@example.test',
+      givenName: 'User',
+      surName: 'Example',
+      affiliation: 'Example University',
+      affiliationId: 'affiliation-1',
+    });
+    await expect(store.issuePendingSSOSignupToken('', 'signup-1', claim)).rejects.toThrow(
       'Audience is required to issue an access token',
     );
-    await expect(store.issuePendingSSOSignupToken('https://other.example.test', claim)).rejects.toThrow(
+    await expect(store.issuePendingSSOSignupToken('https://other.example.test', 'signup-1', claim)).rejects.toThrow(
       'Invalid audience for access token',
     );
   });
@@ -225,10 +232,10 @@ describe('KeyStore', () => {
       jti: 'jti-1',
       tokenVersion: 0,
     } as never);
-    const signupToken = await store.issuePendingSSOSignupToken('https://app.example.test', {
-      signupId: 'signup-1',
-      affiliation: 'Example University',
-      affiliationId: 'affiliation-1',
+    const signupToken = await store.issuePendingSSOSignupToken('https://app.example.test', 'signup-1', {
+      email: 12345 as never,
+      displayName: 'Example University',
+      affiliation: 'affiliation-1',
     });
 
     await expect(store.verifyAccessToken(accessToken)).rejects.toThrow('Invalid access token claims');

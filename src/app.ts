@@ -12,12 +12,13 @@ import type {
   PublicUser,
   RefreshTokenData,
   ShibbolethAssertion,
-  SsoEntityRow
+  SsoEntityRow,
+  TokenClaims
 } from './types.js';
 import type { SignupAttempt, UserStore } from './models/userStore.js';
 import type { KeyStore } from './models/keyStore.js';
 import type { Mail, SMTPSentMessageInfo } from "nodemailer";
-import {sendAccountLockedEmail, sendResetPasswordEmail} from "./email.js";
+import { sendAccountLockedEmail, sendResetPasswordEmail } from "./email.js";
 
 interface Dependencies {
   config: Config;
@@ -729,7 +730,8 @@ export const createApp = (
 
       const assertion: ShibbolethAssertion = assertionFromHeaders(request.headers);
 
-      // Check that the required Shibboleth identity headers are present. If any are missing, return an error response.
+      // Check that the required Shibboleth identity headers are present. If any are missing,
+      // return an error response.
       const subject: string | undefined = assertion.uid ?? assertion.email;
       if (!subject || !assertion.email || !assertion.sessionId || !assertion.entityId) {
         config.logger.warn({ assertion }, 'SSO Callback - missing Shibboleth identity headers');
@@ -737,7 +739,8 @@ export const createApp = (
         return;
       }
 
-      // Find the SSO entity info for the given entityId. If no entity info is found, return an error response.
+      // Find the SSO entity info for the given entityId. If no entity info is found,
+      // return an error response.
       const entityInfo: SsoEntityRow | undefined = await users.findSsoEntityIdById(assertion.entityId);
       if (!entityInfo) {
         config.logger.error({ entityId: assertion.entityId }, 'SSO Callback - no entity info found for entityId');
@@ -747,14 +750,16 @@ export const createApp = (
 
       // Get the user associated with the SSO identity.
       let user: PublicUser | undefined = await users.findBySsoId(subject);
-      // See if there is a current user
+
+      // See if there is a currently logged-in user
       const accessToken: string | undefined = request.cookies[config.tokens.access] as string | undefined;
-      const accessClaim = accessToken ? await tokens.verifyAccessToken(accessToken) : undefined;
+      const accessClaim: TokenClaims | undefined = accessToken ? await tokens.verifyAccessToken(accessToken) : undefined;
       const authenticatedUser: PublicUser | undefined = accessClaim
         ? await users.findById(accessClaim.id)
         : undefined;
 
-      // If there is a current user, then we are attempting to link the SSO identity to their account.
+      // If there is a currently logged-in user, then we are attempting to link the SSO
+      // identity to their account from the account/connections page.
       if (authenticatedUser) {
         // If the SSO identity is already linked to another account, return an error response.
         if (user && user.id !== authenticatedUser.id) {
@@ -763,14 +768,15 @@ export const createApp = (
           return;
         }
 
-        // If the current user already has an SSO identity linked to their account, return an error response.
+        // If the current user already has an SSO identity linked to their account,
+        // return an error response.
         if (!user && authenticatedUser.hasSSO) {
           config.logger.warn({ userId: authenticatedUser.id, subject }, 'SSO Callback - account already linked to an SSO identity');
           response.status(409).json({ success: false, message: 'Account is already linked to an SSO identity' });
           return;
         }
 
-        // If the SSO identity is not linked to any account, link it to the current user's account.
+        // If the SSO identity was not linked to any account, link it to the current user
         if (!user) {
           await users.linkSsoId(authenticatedUser.id, subject);
         }
@@ -778,43 +784,48 @@ export const createApp = (
         user = authenticatedUser;
       }
 
-      // If no user is found, check if there is a matching user by email and if that account is locked.
-      // If it is locked, return an error response.
+      // If no user is found, check if there is a matching user by email. If it is locked,
+      // return an error response.
       if (!user) {
-        const matchingUser = await users.findByEmail(assertion.email);
-        if (matchingUser?.locked) {
-          config.logger.warn({ email: assertion.email }, 'SSO Callback - account is locked');
-          response.status(401).json({ success: false, message: 'Account is locked' });
-          return;
+        user = await users.findByEmail(assertion.email);
+        if (user && user.id) {
+          if (user?.locked) {
+            config.logger.warn({ email: assertion.email }, 'SSO Callback - account is locked');
+            response.status(401).json({ success: false, message: 'Account is locked' });
+            return;
+          }
+
+          // The SAML assertion email matched one in the DB so link them
+          await users.linkSsoId(user.id, subject);
         }
       }
 
-      // If no user is found, store the SSO assertion in the cache, add a cookie with the
+      // If no user was found, store the SSO assertion in the cache, add a cookie with the
       // information the user will need to finish the sign-up process and redirect to the
       // sign-up page
       if (!user) {
-        // Splice in the affiliation info
+        // Splice the affiliation info into the assertion
         assertion.displayName = entityInfo.displayName;
         assertion.affiliation = entityInfo.affiliationId;
 
         config.logger.debug({ subject }, 'SSO Callback - no matching user found');
-        const token: string = await tokens.issuePendingSSOSignupToken(config.audienceUI, assertion);
+        const { token } = await tokens.issuePendingSSOSignupToken(config.audienceUI, assertion);
         response.cookie(config.tokens.ssoPending, token, cookieOptions(config.cookieSecure, 600));
         response.status(302).location('/signup').send();
-        return;
+        next();
+      } else {
+        // Record the successful login for the user and issue new access and refresh tokens
+        await users.ssoLogin(user.id);
+        config.logger.debug({user}, 'SSO Callback - user authenticated');
+        const issued: AuthTokens = await tokens.issue(config.audienceUI, user);
+        writeTokens(response, issued, config);
+
+        // If there is a valid access token, redirect to the user's profile because they were
+        // linking their account, otherwise return to the home page
+        response.status(302)
+            .location(accessClaim ? '/account/connections?linked=true' : '/')
+            .send();
       }
-
-      // Record the successful login for the user and issue new access and refresh tokens
-      await users.ssoLogin(user.id);
-      config.logger.debug({ user }, 'SSO Callback - user authenticated');
-      const issued: AuthTokens = await tokens.issue(config.audienceUI, user);
-      writeTokens(response, issued, config);
-
-      // If there is a valid access token, redirect to the user's profile because they were
-      // linking their account, otherwise return to the home page
-      response.status(302)
-        .location(accessToken ? '/account/connections?linked=true' : '/')
-        .send();
     } catch (error) {
       next(error);
     }
