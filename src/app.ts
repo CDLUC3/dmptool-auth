@@ -12,12 +12,13 @@ import type {
   PublicUser,
   RefreshTokenData,
   ShibbolethAssertion,
-  SsoEntityRow, TokenClaims
+  SsoEntityRow,
+  TokenClaims
 } from './types.js';
 import type { SignupAttempt, UserStore } from './models/userStore.js';
 import type { KeyStore } from './models/keyStore.js';
 import type { Mail, SMTPSentMessageInfo } from "nodemailer";
-import {sendAccountLockedEmail, sendResetPasswordEmail} from "./email.js";
+import { sendAccountLockedEmail, sendResetPasswordEmail } from "./email.js";
 
 interface Dependencies {
   config: Config;

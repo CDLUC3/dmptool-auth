@@ -14,7 +14,8 @@ import type {
   dbQueryResponse,
   KeyRow,
   PendingSSOSignupClaim,
-  RetiredSigningKey, ShibbolethAssertion,
+  RetiredSigningKey,
+  ShibbolethAssertion,
   StoredKeySet,
   TokenClaims
 } from "../types.js";
