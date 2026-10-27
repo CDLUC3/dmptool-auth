@@ -1,6 +1,7 @@
 # dmptool-auth CHANGELOG
 
 ## v1.0.1
+- Added `AGENTS.md` and `CLAUDE.md` files
 - Fixed mismatching `u.failedLoginAttempts` to `u.failed_sign_in_attempts` because updating password was failing
 - Added `x-shib-identity-provider` header so that we can look up the Affiliation in `/sso/callback`
 - Removed errors describing lock outs and remaining attempts
