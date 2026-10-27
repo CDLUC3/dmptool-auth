@@ -16,7 +16,7 @@ const config = {
 
 const pepperPassword = (password: string): string => crypto
   .createHmac('sha256', config.pepperSecret)
-  .update(password)
+  .update(password.trim())
   .digest('hex');
 
 beforeEach(() => {

@@ -160,7 +160,7 @@ export class UserStore {
   private getPepperedPassword(password: string): string {
     return crypto
         .createHmac('sha256', this.config.pepperSecret)
-        .update(password)
+        .update(password.trim())
         .digest('hex');
   }
 
