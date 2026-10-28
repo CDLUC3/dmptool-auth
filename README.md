@@ -49,7 +49,8 @@ All routes are rooted at `ISSUER`. Routes marked **CSRF** require a valid `X-CSR
 | `GET` | `/.well-known/jwks` | Public JSON Web Key Set. |
 | `GET` | `/auth` | Starts an authorization request. |
 | `GET` | `/auth/:uid` | Resumes an authorization request after an interaction completes. |
-| `POST` | `/token` | Exchanges an authorization code or refresh token. |
+| `POST` | `/token` | Exchanges an authorization code or refresh token, or issues a client-credentials access token to an authenticated confidential client. |
+| `POST` | `/token/revocation` | Revokes an access token issued to the authenticated client. |
 | `GET`, `POST` | `/me` | Returns OIDC userinfo for an access token with the appropriate scope. |
 
 ```mermaid
@@ -81,7 +82,7 @@ flowchart TB
 
 Active OAuth clients are resolved from the `oauth_clients` and `oauth_client_redirect_uris` tables for every authorization and token request. `OIDC_CLIENTS_JSON` is a development/bootstrap fallback only when there are no active database registrations. Static client IDs take precedence, so do not duplicate static registrations in MySQL.
 
-The provider supports the authorization-code and refresh-token grants configured for each client. PKCE is enforced when the client registration requires it. OIDC claims include `openid`, `profile`, `email`, and the service-specific `dmp` claims (`id`, `givenName`, `surName`, `role`, `affiliationId`, and `languageId`).
+The provider supports authorization-code, refresh-token, and client-credentials grants configured for each client. Client-credentials clients must be confidential and authenticate using their registered token endpoint authentication method. These tokens represent the client, not a user, and do not include user claims or refresh tokens; clients obtain a new access token with their client credentials when it expires. Clients can revoke their access tokens at the provider's revocation endpoint. PKCE is enforced for authorization-code clients when registration requires it. OIDC claims include `openid`, `profile`, `email`, and the service-specific `dmp` claims (`id`, `givenName`, `surName`, `role`, `affiliationId`, and `languageId`) for user grants.
 
 ```mermaid
 sequenceDiagram
@@ -226,6 +227,7 @@ The service reads all configuration from environment variables and AWS SSM Param
 | `OIDC_REFRESH_TOKEN_TTL` | No | `3.154e+7` | OAuth/OIDC refresh-token and session lifetime (365 days). |
 | `OIDC_GRANT_TTL` | No | `120` | OIDC grant lifetime. |
 | `OIDC_ID_TOKEN_TTL` | No | `600` | OIDC ID-token lifetime. |
+| `OIDC_CLIENT_CREDENTIALS_TOKEN_TTL` | No | `3600` | OIDC client-credentials access-token lifetime. |
 | `OIDC_INTERACTION_TTL` | No | `600` | OIDC interaction lifetime. |
 | `SES_ENDPOINT` | No | `localhost` | SMTP endpoint for the emailer. |
 | `SES_PORT` | No | `587` | SMTP endpoint port. |
