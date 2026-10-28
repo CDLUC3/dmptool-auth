@@ -15,6 +15,13 @@ const usersTable: string = process.env.DB_USERS_TABLE || 'users';
 const userEmailsTable: string = process.env.DB_USER_EMAILS_TABLE || 'user_emails';
 const templateCollaboratorsTable: string = process.env.DB_TEMPLATE_COLLABORATORS_TABLE || 'template_collaborators';
 const projectCollaboratorsTable: string = process.env.DB_PROJECT_COLLABORATORS_TABLE || 'project_collaborators';
+const affiliationsTable: string = process.env.DB_AFFILIATIONS_TABLE || 'affiliations';
+
+// Base URI for affiliations that were manually added by users (mirrors the Apollo server)
+const DEFAULT_DMPTOOL_AFFILIATION_URL = 'https://dmptool.org/affiliations/';
+
+// The placeholder affiliationId the UI sends when the user selects "Other" and types in a name
+export const OTHER_AFFILIATION_ID = 'other';
 
 export type SignupAttempt = PublicUser & {
   signupFailed?: true;
@@ -230,6 +237,7 @@ export class UserStore {
     input: Omit<User, 'id' | 'passwordHash' | 'tokenVersion'> & {
       password: string;
       claimOpenInvitations?: boolean;
+      otherAffiliationName?: string;
     },
   ): Promise<SignupAttempt> {
     const errors: Record<string, string | undefined> = {};
@@ -239,6 +247,16 @@ export class UserStore {
     if (!emailPattern.test(email)) errors['email'] = 'Invalid email format';
     if (!isValidPassword(input.password)) errors['password'] = 'Invalid password format';
     if (!input.acceptedTerms) errors['acceptedTerms'] = 'Terms must be accepted';
+
+    // The "other" placeholder is not a real affiliation, so it must be accompanied by a name
+    const otherAffiliationName: string | undefined = input.otherAffiliationName?.trim() || undefined;
+    const rawAffiliationId: string | undefined = input.affiliationId?.trim();
+    const affiliationId: string | null = rawAffiliationId && rawAffiliationId.toLowerCase() !== OTHER_AFFILIATION_ID
+      ? rawAffiliationId
+      : null;
+    if (!affiliationId && rawAffiliationId?.toLowerCase() === OTHER_AFFILIATION_ID && !otherAffiliationName) {
+      errors['otherAffiliationName'] = 'Please enter the name of your institution';
+    }
     if (Object.keys(errors).length > 0) return { signupFailed: true, errors } as SignupAttempt;
 
     // Make sure the email is not already in use
@@ -267,7 +285,7 @@ export class UserStore {
         'RESEARCHER',  // New users are always created with the RESEARCHER role
         this.capitalize(input.givenName),
         this.capitalize(input.surName),
-        input.affiliationId?.trim(),
+        affiliationId,
         true,   // They wouldn't have been able to create an account without accepting the terms
         input.languageId?.trim() || 'en-US',
         encryptedSsoId,
@@ -294,6 +312,24 @@ export class UserStore {
       WHERE id = ?`,
       [userId, userId, input.ssoId ? 'SSO' : 'PASSWORD', userId],
     );
+
+    // If the user entered an affiliation that is not in the list, find or create it and attach it.
+    // This happens after the user is inserted because affiliations.createdById is required.
+    if (!affiliationId && otherAffiliationName) {
+      const otherAffiliationId: string | undefined = await this.findOrCreateAffiliationByName(
+        otherAffiliationName,
+        userId,
+      );
+      if (otherAffiliationId) {
+        await queryTable(
+          { ...this.config.database, logger: this.config.logger },
+          `UPDATE ${usersTable} SET affiliationId = ? WHERE id = ?`,
+          [otherAffiliationId, userId],
+        );
+      } else {
+        this.config.logger.error({ otherAffiliationName, userId }, 'Unable to create the affiliation for the new user');
+      }
+    }
 
     // Add the primary email address for the new user in the userEmails table
     await queryTable(
@@ -568,6 +604,75 @@ export class UserStore {
 
     const ssoEntityRow = ssoEntityRows.results[0] as SsoEntityRow | undefined;
     return ssoEntityRow || undefined;
+  }
+
+  /**
+   * Finds an affiliation by its name or display name (case-insensitive), creating a new DMPTool-managed
+   * affiliation if none exists. Mirrors processOtherAffiliationName in the Apollo server.
+   *
+   * @param name The name of the affiliation entered by the user.
+   * @param userId The id of the user creating the affiliation (used for createdById/modifiedById).
+   * @returns A Promise that resolves to the affiliation URI, or undefined if it could not be created.
+   */
+  async findOrCreateAffiliationByName(
+    name: string,
+    userId: number,
+  ): Promise<string | undefined> {
+    const displayName: string = name.trim();
+    if (!displayName) return undefined;
+
+    const dbConfig = { ...this.config.database, logger: this.config.logger };
+    const findByName = async (): Promise<string | undefined> => {
+      const existing: dbQueryResponse = await queryTable(
+        dbConfig,
+        `SELECT uri FROM ${affiliationsTable}
+         WHERE TRIM(LOWER(name)) = ? OR TRIM(LOWER(displayName)) = ? LIMIT 1`,
+        [displayName.toLowerCase(), displayName.toLowerCase()],
+      );
+      const row = Array.isArray(existing.results)
+        ? existing.results[0] as { uri?: string } | undefined
+        : undefined;
+      return row?.uri || undefined;
+    };
+
+    const existingUri: string | undefined = await findByName();
+    if (existingUri) return existingUri;
+
+    // Build the abbreviation the same way the Apollo server does
+    const words: string[] = displayName.split(' ').filter((word) => word.length > 0);
+    const displayAbbreviation: string = words.length > 1
+      ? words.slice(0, 4).map((word) => word[0].toUpperCase()).join('')
+      : displayName.replace(' ', '').slice(0, 4).toUpperCase();
+
+    const uri = `${DEFAULT_DMPTOOL_AFFILIATION_URL}${crypto.randomBytes(3).toString('hex')}`;
+    try {
+      const response: dbQueryResponse = await queryTable(
+        dbConfig,
+        `INSERT INTO ${affiliationsTable}
+          (uri, provenance, name, displayName, displayAbbreviation, searchName, types, acronyms, aliases,
+           feedbackEmails, managed, active, createdById, modifiedById)
+         VALUES (?, 'DMPTOOL', ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?, ?)`,
+        [
+          uri,
+          displayName,
+          displayName,
+          displayAbbreviation,
+          [displayName, displayAbbreviation].join(' | ').substring(0, 249),
+          JSON.stringify(['OTHER']),
+          JSON.stringify([]),
+          JSON.stringify([]),
+          JSON.stringify([]),
+          userId,
+          userId,
+        ],
+      );
+      if (response.results && (response.results as ResultSetHeader).affectedRows > 0) return uri;
+    } catch (error) {
+      // Most likely a race where another signup created the same displayName (it has a unique index)
+      this.config.logger.error({ error, displayName }, 'Unable to insert new affiliation');
+    }
+
+    return await findByName();
   }
 
   /**
