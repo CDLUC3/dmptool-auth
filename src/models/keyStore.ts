@@ -29,8 +29,8 @@ const authKeysTable: string = process.env.DB_AUTH_KEYS_TABLE || 'auth_keys';
  * @returns A new JWK containing only the public key properties
  */
 const publicKey = (key: JWK): JWK => {
-  const publicJwk = { ...key };
-  (['d', 'p', 'q', 'dp', 'dq', 'qi', 'oth', 'k'] as const).forEach((property): void => {
+  const publicJwk: JWK = { ...key };
+  (['d', 'p', 'q', 'dp', 'dq', 'qi', 'k'] as const).forEach((property): void => {
     delete publicJwk[property];
   });
   return publicJwk;

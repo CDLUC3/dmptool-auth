@@ -1,4 +1,4 @@
-# AGENTS.md — dmptool-apollo-server
+# AGENTS.md — dmptool-auth
 
 You are a senior nodeJS engineer and security expert working on the **DMP Tool Auth service (ExpressJS)**, an ExpressJS 5 app written in TypeScript 6.
 It provides CSRF, authentication and authorization services for other DMP Tool microservices.
@@ -24,11 +24,12 @@ Node **22** (see `.nvmrc`) and **npm**. Don't use yarn or pnpm, and don't create
 ## Boundaries
 
 **Never:**
-- Commit secrets, tokens, or `.env` files. If you add an env var, put it in `.env.example`, and mention in the PR that `buildspec.yaml` and `Dockerfile.prod` need it too.
-- Lower the Jest `coverageThreshold` in `jest.config.ts`, add coverage ignores to hide untested code, or skip or delete tests so a run passes.
+- Commit secrets, tokens, or `.env` files. If you add an env var, put it in `.env.example`, and mention in the PR that `buildspec.yaml` and `Dockerfile` and `Dockerfile.aws` need it too.
+- Lower the Jest `coverageThreshold` in `jest.config.cjs`, add coverage ignores to hide untested code, or skip or delete tests so a run passes.
 - Skip the husky pre-commit hook (`--no-verify`).
 - Hand-edit the version in `package.json`.
 - Run Prettier or a formatter on files you didn't change.
+- Log secrets or PII (passwords (plain or hashed), the pepper, tokens, private keys, etc).
 
 **Ask first:**
 - Before adding, removing, or upgrading a dependency. Pin exact versions with `npm install --save-exact <package>@<version>`, because plain `npm install <package>` adds a `^`. `package-lock.json` changes only as a result of `npm install`; never edit it by hand.
@@ -36,11 +37,11 @@ Node **22** (see `.nvmrc`) and **npm**. Don't use yarn or pnpm, and don't create
 
 ## Code style
 
-`.prettierrc` and `eslint.config.mjs` are the source of truth for formatting and lint rules. These conventions aren't enforced by tooling:
+`.prettierrc` and `eslint.config.mjs` are the source of truth for formatting and lint rules.
 
 ## Configuration
 
-- Configuration is in `.env` files, `docker-compose.yaml`, `config/*.json`, and `config/*.yaml`. Don't hardcode config values in code. Use `process.env` or the `config` package to access them.
+- Configuration is in `.env` files, `docker-compose.yaml`, `src/config.ts`. Don't hardcode config values in code. Use `process.env` or the `config.ts` file to access them.
 - When making changes, keep in mind that when this application is deployed into our production environment, it will be running in a Docker container with a read-only filesystem. The ENV variables from both the `docker-compose.yaml` and the `config/*.json` files will be fed into the container via ENV variables by our CI/CD pipeline. If you add or change any of these variables please note it in the PR so that they can be updated accordingly.
 - This app requires the `dmptool-apollo-server` service to be running on port `4000` because that service hosts the local MySQL database. You can check if the service is running by visiting `http://localhost:4000/up` in your browser. If you see a 404 error, the service is not running. If it is not running you may start it by navigating to the `dmptool-apollo-server` directory (which should be adjacent to this project) and run `docker compose up`. If you do not have access to the directory you should notify the development team so that they can either provide you with access or start it for you.
 
@@ -93,7 +94,7 @@ Node **22** (see `.nvmrc`) and **npm**. Don't use yarn or pnpm, and don't create
 - the `cache.ts` file contains the cache service that is used to store and retrieve data from the cache. It uses ValKey as the cache store.
 - the `oidc.ts` file contains the OIDC service that is used to authenticate users coming from our REST API `dmptool-api`.
 - the `email.ts` file contains the email service that is used to send emails to users.
-- the `token.ts` file contains the token service that is used to generate and validate tokens.
+- the `tokenService.ts` file contains the token service that is used to generate and validate tokens.
 
 ## Models
 
@@ -110,7 +111,7 @@ Before you call a task done, run these and make sure they pass (they're the same
 ```bash
 npm run lint
 npm run build
-npm test            # fails if coverage drops below the thresholds in jest.config.ts
+npm test            # fails if coverage drops below the thresholds in jest.config.cjs
 ```
 
 - Put unit tests in a `__tests__/` folder next to the code, named `*.spec.tsx` or `*.spec.ts`.
