@@ -1,7 +1,14 @@
 # dmptool-auth CHANGELOG
 
+## v1.0.2
+- Updated `/sign-out` function to revoke `jti` rather than `userId`, so that user can sign out and log back in with a valid access token before the 15-minute period. Updated `revoke` and `isRevoked` in `tokenService.ts`to use `jti` rather than `userId` to revoke. Also, addressed `zod` and `body-parser` vulnerabilities.
+
 ## v1.0.1
 - Added `AGENTS.md` and `CLAUDE.md` files
+- Fix issue where the `affiliation` and `affiliationId` in the token were incorrect and causing the UI to send back the affiliation's display name in the final sign up
+- Fix a logic issue where an SSO sign up that has an exact match on the email the SSO returned to an entry in the `userEmails` table was logging in, but not linking the account.
+- Fix an issue where successful login was directing the user to their `/account/connections` page instead of `/`
+- Fix an issue with encrypting the SSO ids.
 - Fixed mismatching `u.failedLoginAttempts` to `u.failed_sign_in_attempts` because updating password was failing
 - Added `x-shib-identity-provider` header so that we can look up the Affiliation in `/sso/callback`
 - Removed errors describing lock outs and remaining attempts

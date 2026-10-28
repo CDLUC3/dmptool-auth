@@ -1,7 +1,6 @@
 import request from 'supertest';
 import { decodeJwt } from 'jose';
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
-import bcrypt from 'bcryptjs';
 import crypto from 'node:crypto';
 import type { Config, OAuthClient } from '../types.js';
 import type { CacheInterface } from '../cache.js';
@@ -238,14 +237,14 @@ describe('authentication routes', () => {
       .expect(200);
     expect(refresh.body.success).toBe(true);
     const refreshedAccessCookie = setCookies(refresh).find((value) => value.startsWith('test_access='));
-    const refreshedUserId = decodeJwt(refreshedAccessCookie!.split(';')[0].slice('test_access='.length)).id as string;
-    await request(app).get(`/revocations/${refreshedUserId}`).expect(200, { revoked: false });
+    const refreshedJti = decodeJwt(refreshedAccessCookie!.split(';')[0].slice('test_access='.length)).jti as string;
+    await request(app).get(`/revocations/${refreshedJti}`).expect(200, { revoked: false });
 
     const signoutCsrf = await agent.get('/csrf').expect(200);
     await agent.post('/sign-out')
       .set('X-CSRF-Token', signoutCsrf.headers['x-csrf-token'] as string)
       .expect(200);
-    await request(app).get(`/revocations/${refreshedUserId}`).expect(200, { revoked: true });
+    await request(app).get(`/revocations/${refreshedJti}`).expect(200, { revoked: true });
 
     const signinCsrf = await agent.get('/csrf').expect(200);
     const signin = await agent.post('/sign-in')
@@ -512,6 +511,28 @@ describe('authentication routes', () => {
       .set('X-CSRF-Token', newPasswordSigninCsrf.headers['x-csrf-token'] as string)
       .send({ email: 'alice@example.test', password: 'NewPassw0rd!' })
       .expect(200, { success: true, message: 'ok' });
+
+    // Signing out revokes only that session's access token, so a fresh sign-in can change the password again
+    const signoutCsrf = await agent.get('/csrf').expect(200);
+    await agent.post('/sign-out')
+      .set('X-CSRF-Token', signoutCsrf.headers['x-csrf-token'] as string)
+      .expect(200);
+
+    const resigninCsrf = await agent.get('/csrf').expect(200);
+    await agent.post('/sign-in')
+      .set('X-CSRF-Token', resigninCsrf.headers['x-csrf-token'] as string)
+      .send({ email: 'alice@example.test', password: 'NewPassw0rd!' })
+      .expect(200, { success: true, message: 'ok' });
+
+    const secondChangeCsrf = await agent.get('/csrf').expect(200);
+    await agent.post('/change-password')
+      .set('X-CSRF-Token', secondChangeCsrf.headers['x-csrf-token'] as string)
+      .send({
+        currentPassword: 'NewPassw0rd!',
+        newPassword: 'NewerPassw0rd!',
+        newPasswordConfirmation: 'NewerPassw0rd!',
+      })
+      .expect(200, { success: true, message: 'ok' });
   });
 
   it('validates password reset payloads and forwards unexpected reset errors', async () => {
@@ -566,7 +587,7 @@ describe('authentication routes', () => {
     expect(discovery.body.issuer).toBe('http://auth.example.test');
   });
 
-  it('does not auto-link a Shibboleth assertion to a matching email account', async () => {
+  it('auto-links a Shibboleth assertion to a matching email account', async () => {
     const { app } = await buildApp();
     const csrf = await request(app).get('/csrf').expect(200);
     await request(app).post('/sign-up')
@@ -587,8 +608,8 @@ describe('authentication routes', () => {
       .set('x-shib-identity-provider', 'https://idp.example.test')
       .set('x-shib-session-id', 'sso-session')
       .expect(302);
-    expect(result.headers.location).toBe('/signup');
-    expect(setCookies(result).join(';')).not.toContain('test_access=');
+    expect(result.headers.location).toBe('/');
+    expect(setCookies(result).join(';')).toContain('test_access=');
   });
 
   it('rejects an invalid Shibboleth callback payload', async () => {
@@ -863,7 +884,7 @@ describe('authentication routes', () => {
       .createHmac('sha256', 'test-pepper-secret')
       .update('alice@example.test')
       .digest('hex');
-    await expect(bcrypt.compare(pepperedSsoId, createdUser!.ssoId!)).resolves.toBe(true);
+    expect(pepperedSsoId).toEqual(createdUser!.ssoId!);
     expect(cookie(signup, 'test_access')).toBeDefined();
     expect(cookie(signup, 'test_refresh')).toBeDefined();
     expect(setCookies(signup).join(';')).toContain('test_sso_pending=;');
@@ -883,7 +904,6 @@ describe('authentication routes', () => {
         givenName: 'Alice',
         surName: 'Example',
         affiliationId: 'https://ror.org/example',
-        ssoId: 'alice@example.test',
         acceptedTerms: 'true',
       })
       .expect(201);
@@ -893,7 +913,7 @@ describe('authentication routes', () => {
       .set('x-shib-eppn', 'alice@example.test')
       .set('x-shib-session-id', 'sso-session')
       .set('x-shib-identity-provider', 'https://idp.example.test')
-      .set('x-shib-mail', 'alice@example.test')
+      .set('x-shib-mail', 'unknown@example.test')
       .expect(302);
     expect(callback.headers.location).toBe('/signup');
     expect(cookie(callback, 'test_access')).toBeUndefined();

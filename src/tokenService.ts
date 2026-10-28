@@ -10,7 +10,7 @@ import type {
 
 // Helper functions to generate cache keys for refresh tokens and revoked access tokens
 const refreshKey = (token: string): string => `auth:refresh:${token}`;
-const revokedKey = (userId: string): string => `auth:revoked:${userId}`;
+const revokedKey = (jti: string): string => `auth:revoked:${jti}`;
 const passwordResetKey = (token: string): string => `auth:password-reset:${token}`;
 
 export interface AuthTokens {
@@ -80,23 +80,23 @@ export class TokenService {
   }
 
   /**
-   * Revoke a user's access tokens by storing their user ID in the cache with a TTL equal to the access token's TTL.
+   * Revoke an access token by storing its jti in the cache with a TTL equal to the access token's TTL.
    *
-   * @param userId the user's unique identifier
+   * @param jti the unique identifier of the access token to revoke
    * @returns A Promise that resolves when the access token has been revoked.
    */
-  async revoke(userId: string): Promise<void> {
-    await this.cache.set(revokedKey(userId), '1', this.accessTtlSeconds);
+  async revoke(jti: string): Promise<void> {
+    await this.cache.set(revokedKey(jti), '1', this.accessTtlSeconds);
   }
 
   /**
    * Determine whether an access token has been revoked.
    *
-   * @param userId the user's unique identifier
+   * @param jti the unique identifier of the access token to check
    * @returns whether the access token has been revoked
    */
-  async isRevoked(userId: string): Promise<boolean> {
-    return (await this.cache.get(revokedKey(userId))) !== undefined;
+  async isRevoked(jti: string): Promise<boolean> {
+    return (await this.cache.get(revokedKey(jti))) !== undefined;
   }
 
   /**
@@ -105,7 +105,7 @@ export class TokenService {
   async verifyAccessToken(accessToken: string): Promise<TokenClaims | undefined> {
     try {
       const claims: TokenClaims = await this.keyStore.verifyAccessToken(accessToken);
-      return await this.isRevoked(claims.id) ? undefined : claims;
+      return await this.isRevoked(claims.jti) ? undefined : claims;
     } catch {
       return undefined;
     }
@@ -114,18 +114,9 @@ export class TokenService {
   /**
    * Create a cryptographically secure, time-limited pending SSO sign up token.
    */
-  async issuePendingSSOSignupToken(audience: string, payload: ShibbolethAssertion): Promise<string> {
+  async issuePendingSSOSignupToken(audience: string, payload: ShibbolethAssertion): Promise<{ signupId: string, token: string }> {
     const signupId: string = randomUUID();
-    // just include the parts needed in the UI for the user to finish signing up
-    const claim: PendingSSOSignupClaim = {
-      signupId,
-      email: payload.email || '',
-      givenName: payload.givenName || '',
-      surName: payload.surName || '',
-      affiliation: payload.displayName || '',
-      affiliationId: payload.affiliation || '',
-    };
-    const token: string = await this.keyStore.issuePendingSSOSignupToken(audience, claim, this.pendingSSOTtlSeconds);
+    const token: string = await this.keyStore.issuePendingSSOSignupToken(audience, signupId, payload, this.pendingSSOTtlSeconds);
 
     // Add the original SAML assertion to the cache so that we can use it later when the
     // user completes the signup process
@@ -134,7 +125,7 @@ export class TokenService {
       JSON.stringify(payload),
       this.pendingSSOTtlSeconds
     );
-    return token;
+    return { signupId, token };
   }
 
   /**
