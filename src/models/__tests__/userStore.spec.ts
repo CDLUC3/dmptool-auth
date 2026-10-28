@@ -77,6 +77,64 @@ describe('UserStore', () => {
     expect(queryTable.mock.calls[5][2]).toEqual([42, 'alice@example.test']);
   });
 
+  it('creates a new affiliation when the user selects "other" and enters a name', async () => {
+    queryTable
+      .mockResolvedValueOnce({ results: [], fields: [] }) // findByEmail
+      .mockResolvedValueOnce({ results: { affectedRows: 1, insertId: 42 }, fields: [] }) // insert user
+      .mockResolvedValueOnce({ results: { affectedRows: 1 }, fields: [] }) // backfill createdById
+      .mockResolvedValueOnce({ results: [], fields: [] }) // find affiliation by name
+      .mockResolvedValueOnce({ results: { affectedRows: 1, insertId: 7 }, fields: [] }) // insert affiliation
+      .mockResolvedValueOnce({ results: { affectedRows: 1 }, fields: [] }) // set user affiliationId
+      .mockResolvedValueOnce({ results: { affectedRows: 1 }, fields: [] }) // insert email
+      .mockResolvedValueOnce({ results: { affectedRows: 1 }, fields: [] })
+      .mockResolvedValueOnce({ results: { affectedRows: 1 }, fields: [] })
+      .mockResolvedValueOnce({ results: [{
+        id: 42, email: 'alice@example.test', password: 'hash', role: 'RESEARCHER',
+        givenName: 'Alice', surName: 'Example', affiliationId: 'https://dmptool.org/affiliations/abc123',
+        languageId: 'en-US', ssoId: null, locked: 0, failed_sign_in_attempts: 0,
+      }], fields: [] });
+    const repository = new UserStore(config as never);
+    const user = await repository.create({
+      email: 'alice@example.test',
+      password: 'Passw0rd!',
+      givenName: 'Alice',
+      surName: 'Example',
+      affiliationId: 'other',
+      otherAffiliationName: ' New Test Org ',
+      languageId: 'en-US',
+      role: 'RESEARCHER',
+      acceptedTerms: true,
+    } as never);
+
+    expect(user).toMatchObject({ id: '42' });
+    // The "other" placeholder is never stored on the user
+    expect(queryTable.mock.calls[1][2]?.[4]).toBeNull();
+    expect(queryTable.mock.calls[3][2]).toEqual(['new test org', 'new test org']);
+    const insertParams = queryTable.mock.calls[4][2] as unknown[];
+    expect(insertParams[0]).toMatch(/^https:\/\/dmptool\.org\/affiliations\/[0-9a-f]{6}$/);
+    expect(insertParams.slice(1, 4)).toEqual(['New Test Org', 'New Test Org', 'NTO']);
+    expect(insertParams.slice(-2)).toEqual([42, 42]);
+    expect(queryTable.mock.calls[5][2]).toEqual([insertParams[0], 42]);
+  });
+
+  it('reuses an existing affiliation that matches the "other" name', async () => {
+    queryTable.mockResolvedValueOnce({ results: [{ uri: 'https://ror.org/existing' }], fields: [] });
+    const repository = new UserStore(config as never);
+    await expect(repository.findOrCreateAffiliationByName('Existing Org', 42))
+      .resolves.toBe('https://ror.org/existing');
+    expect(queryTable).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects the "other" affiliation without a name', async () => {
+    const repository = new UserStore(config as never);
+    const resp = await repository.create({
+      email: 'user@example.test', password: 'Passw0rd!', acceptedTerms: true, givenName: 'User', surName: 'Example',
+      affiliationId: 'other', otherAffiliationName: '  ', languageId: 'en', role: 'RESEARCHER',
+    } as never);
+    expect(resp).toMatchObject({ signupFailed: true, errors: { otherAffiliationName: expect.any(String) } });
+    expect(queryTable).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['invalid email', { email: 'not-an-email', password: 'Passw0rd!', acceptedTerms: true }, 'email', 'Invalid email format'],
     ['weak password', { email: 'user@example.test', password: 'password', acceptedTerms: true }, 'password', 'Invalid password format'],
@@ -162,7 +220,7 @@ describe('UserStore', () => {
     await expect(repository.create(input)).resolves.toMatchObject({ id: '7', email: 'alice@example.test' });
     const values = queryTable.mock.calls[0]![2] as unknown[];
     expect(values.slice(0, 7)).toEqual([
-      expect.any(String), 'RESEARCHER', '', '', undefined, true, 'en-US',
+      expect.any(String), 'RESEARCHER', '', '', null, true, 'en-US',
     ]);
     expect(pepperPassword(' sso-1 ')).toEqual(values[7] as string);
   });
