@@ -1,6 +1,7 @@
 import request from 'supertest';
 import { decodeJwt } from 'jose';
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
+import crypto from 'node:crypto';
 import type { Config, OAuthClient } from '../types.js';
 import type { CacheInterface } from '../cache.js';
 import type { Mail, SMTPSentMessageInfo } from 'nodemailer';
@@ -72,6 +73,7 @@ const buildApp = async (env = 'test') => {
       csrf: 3600,
       uiAccess: 600,
       uiRefresh: 604800,
+      uiPendingSSOSignup: 600,
       passwordReset: 123,
       oidcCode: 120,
       oidcAccess: 900,
@@ -91,6 +93,11 @@ const buildApp = async (env = 'test') => {
   const cache: CacheInterface = new Cache(config);
   const keys = await KeyStore.load(config);
   const users = new UserStore(config);
+  jest.spyOn(users, 'findSsoEntityIdById').mockResolvedValue({
+    affiliationId: 'https://ror.org/example',
+    displayName: 'Example University',
+    ssoEntityId: 'https://idp.example.test',
+  });
   const provider = createProvider(config, cache, users, keys);
   return {
     app: createApp({
@@ -230,14 +237,14 @@ describe('authentication routes', () => {
       .expect(200);
     expect(refresh.body.success).toBe(true);
     const refreshedAccessCookie = setCookies(refresh).find((value) => value.startsWith('test_access='));
-    const refreshedUserId = decodeJwt(refreshedAccessCookie!.split(';')[0].slice('test_access='.length)).id as string;
-    await request(app).get(`/revocations/${refreshedUserId}`).expect(200, { revoked: false });
+    const refreshedJti = decodeJwt(refreshedAccessCookie!.split(';')[0].slice('test_access='.length)).jti as string;
+    await request(app).get(`/revocations/${refreshedJti}`).expect(200, { revoked: false });
 
     const signoutCsrf = await agent.get('/csrf').expect(200);
     await agent.post('/sign-out')
       .set('X-CSRF-Token', signoutCsrf.headers['x-csrf-token'] as string)
       .expect(200);
-    await request(app).get(`/revocations/${refreshedUserId}`).expect(200, { revoked: true });
+    await request(app).get(`/revocations/${refreshedJti}`).expect(200, { revoked: true });
 
     const signinCsrf = await agent.get('/csrf').expect(200);
     const signin = await agent.post('/sign-in')
@@ -263,7 +270,7 @@ describe('authentication routes', () => {
       .expect(401, { success: false, message: 'Invalid credentials' });
   });
 
-  it('reports remaining password attempts, locks after the threshold, and blocks valid credentials once locked', async () => {
+  it('resets failed password attempts and permits a later valid sign-in', async () => {
     const { app } = await buildApp();
     const agent = request.agent(app);
     const signupCsrf = await agent.get('/csrf').expect(200);
@@ -279,28 +286,20 @@ describe('authentication routes', () => {
       })
       .expect(201);
 
-    for (const remainingSignInAttempts of [4, 3, 2, 1]) {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    for (const _ of [1, 2]) {
       const csrf = await agent.get('/csrf').expect(200);
       await agent.post('/sign-in')
         .set('X-CSRF-Token', csrf.headers['x-csrf-token'] as string)
         .send({ email: 'locked@example.test', password: 'wrong' })
-        .expect(401, {
-          success: false,
-          message: `Invalid credentials. ${remainingSignInAttempts} remaining attempts before your account is locked.`,
-        });
+        .expect(401, { success: false, message: 'Invalid credentials' });
     }
 
-    const finalFailureCsrf = await agent.get('/csrf').expect(200);
+    const validLoginCsrf = await agent.get('/csrf').expect(200);
     await agent.post('/sign-in')
-      .set('X-CSRF-Token', finalFailureCsrf.headers['x-csrf-token'] as string)
-      .send({ email: 'locked@example.test', password: 'wrong' })
-      .expect(401, { success: false, message: 'Your account has been locked due to too many failed sign in attempts' });
-
-    const lockedLoginCsrf = await agent.get('/csrf').expect(200);
-    await agent.post('/sign-in')
-      .set('X-CSRF-Token', lockedLoginCsrf.headers['x-csrf-token'] as string)
+      .set('X-CSRF-Token', validLoginCsrf.headers['x-csrf-token'] as string)
       .send({ email: 'locked@example.test', password: 'Passw0rd!' })
-      .expect(401, { success: false, message: 'Your account has been locked due to too many failed sign in attempts' });
+      .expect(200, { success: true, message: 'ok' });
   });
 
   it('issues one-time password reset tokens and rejects invalid reset attempts', async () => {
@@ -505,15 +504,34 @@ describe('authentication routes', () => {
     await agent.post('/sign-in')
       .set('X-CSRF-Token', signinCsrf.headers['x-csrf-token'] as string)
       .send({ email: 'alice@example.test', password: 'Passw0rd!' })
-      .expect(401, {
-        success: false,
-        message: 'Invalid credentials. 4 remaining attempts before your account is locked.',
-      });
+      .expect(401, { success: false, message: 'Invalid credentials' });
 
     const newPasswordSigninCsrf = await agent.get('/csrf').expect(200);
     await agent.post('/sign-in')
       .set('X-CSRF-Token', newPasswordSigninCsrf.headers['x-csrf-token'] as string)
       .send({ email: 'alice@example.test', password: 'NewPassw0rd!' })
+      .expect(200, { success: true, message: 'ok' });
+
+    // Signing out revokes only that session's access token, so a fresh sign-in can change the password again
+    const signoutCsrf = await agent.get('/csrf').expect(200);
+    await agent.post('/sign-out')
+      .set('X-CSRF-Token', signoutCsrf.headers['x-csrf-token'] as string)
+      .expect(200);
+
+    const resigninCsrf = await agent.get('/csrf').expect(200);
+    await agent.post('/sign-in')
+      .set('X-CSRF-Token', resigninCsrf.headers['x-csrf-token'] as string)
+      .send({ email: 'alice@example.test', password: 'NewPassw0rd!' })
+      .expect(200, { success: true, message: 'ok' });
+
+    const secondChangeCsrf = await agent.get('/csrf').expect(200);
+    await agent.post('/change-password')
+      .set('X-CSRF-Token', secondChangeCsrf.headers['x-csrf-token'] as string)
+      .send({
+        currentPassword: 'NewPassw0rd!',
+        newPassword: 'NewerPassw0rd!',
+        newPasswordConfirmation: 'NewerPassw0rd!',
+      })
       .expect(200, { success: true, message: 'ok' });
   });
 
@@ -536,15 +554,23 @@ describe('authentication routes', () => {
 
   it('redirects a Shibboleth assertion for an unknown account to registration', async () => {
     const { app } = await buildApp();
+    database.setSsoEntityIdForEmailDomain('example.test', 'https://idp.example.test');
+
     const result = await request(app).get('/sso/callback/sso-session')
       .set(shibbolethProxyHeaders)
       .set('x-shib-eppn', 'alice@example.test')
       .set('x-shib-mail', 'alice@example.test')
+      .set('x-shib-identity-provider', 'https://idp.example.test')
       .set('x-shib-session-id', 'sso-session')
       .expect(302);
 
     expect(result.headers.location).toBe('/signup');
-    expect(setCookies(result).join(';')).toContain(`test_sso_pending=sso-session`);
+    const pendingToken = cookie(result, 'test_sso_pending');
+    expect(pendingToken).toBeDefined();
+    expect(decodeJwt(pendingToken!)).toMatchObject({
+      email: 'alice@example.test',
+      signupId: expect.any(String),
+    });
   });
 
   it('rejects invalid credentials and invalid csrf requests, and exposes provider discovery', async () => {
@@ -561,7 +587,7 @@ describe('authentication routes', () => {
     expect(discovery.body.issuer).toBe('http://auth.example.test');
   });
 
-  it('issues cookies for a known Shibboleth user', async () => {
+  it('auto-links a Shibboleth assertion to a matching email account', async () => {
     const { app } = await buildApp();
     const csrf = await request(app).get('/csrf').expect(200);
     await request(app).post('/sign-up')
@@ -579,6 +605,8 @@ describe('authentication routes', () => {
       .set(shibbolethProxyHeaders)
       .set('x-shib-eppn', 'alice@example.test')
       .set('x-shib-mail', 'alice@example.test')
+      .set('x-shib-identity-provider', 'https://idp.example.test')
+      .set('x-shib-session-id', 'sso-session')
       .expect(302);
     expect(result.headers.location).toBe('/');
     expect(setCookies(result).join(';')).toContain('test_access=');
@@ -642,12 +670,18 @@ describe('authentication routes', () => {
     const passthrough = await request(app).post('/sso/passthru')
       .send({ email: 'alice@example.test', entityId: 'https://idp.example.test' })
       .expect(302);
-    expect(passthrough.headers.location).toContain('entityId=https%3A%2F%2Fidp.example.test');
+    expect(passthrough.headers.location).toContain('entityID=https%3A%2F%2Fidp.example.test');
   });
 
   it('checks SSO support and uses the returned entity ID to start the SSO workflow', async () => {
-    const { app } = await buildApp();
-    database.setSsoEntityIdForEmailDomain('example.test', 'https://idp.example.test');
+    const { app, users } = await buildApp();
+    const findSsoEntityIdByURI = jest.spyOn(users, 'findSsoEntityIdByURI');
+    jest.spyOn(users, 'findAffiliationByEmail')
+      .mockResolvedValue({
+        affiliationId: 'https://ror.org/example',
+        displayName: 'Example University',
+        ssoEntityId: 'https://idp.example.test',
+      });
 
     const ssoCheck = await request(app).get('/sso-check')
       .query({ email: 'alice@example.test' })
@@ -655,17 +689,64 @@ describe('authentication routes', () => {
         success: true,
         email: 'alice@example.test',
         entityId: 'https://idp.example.test',
+        affiliationId: 'https://ror.org/example',
+        displayName: 'Example University',
       });
     expect(ssoCheck.headers['cache-control']).toContain('no-store');
+
+    jest.spyOn(users, 'findByEmail').mockResolvedValue({
+      id: 'sso-linked-user',
+      email: 'linked@personal.test',
+      givenName: 'Linked',
+      surName: 'User',
+      role: 'RESEARCHER',
+      affiliationId: 'https://ror.org/private-affiliation',
+      languageId: 'en',
+      ssoId: 'mock:linked@personal.test',
+    } as never);
+    jest.spyOn(users, 'findAffiliationByEmail').mockResolvedValue({
+      affiliationId: 'https://ror.org/domain-affiliation',
+      displayName: 'Domain University',
+      ssoEntityId: 'https://idp.domain.test',
+    });
+    const accountIndependentCheck = await request(app).get('/sso-check')
+      .query({ email: 'linked@personal.test' })
+      .expect(200, {
+        success: true,
+        email: 'linked@personal.test',
+        entityId: 'https://idp.domain.test',
+        affiliationId: 'https://ror.org/domain-affiliation',
+        displayName: 'Domain University',
+      });
+    expect(accountIndependentCheck.headers['cache-control']).toContain('no-store');
+    expect(findSsoEntityIdByURI).not.toHaveBeenCalled();
+
+    jest.spyOn(users, 'findAffiliationByEmail').mockResolvedValue({
+      affiliationId: 'https://ror.org/domain-affiliation',
+      displayName: 'Domain University',
+    });
+    const noEntityId = await request(app).get('/sso-check')
+        .query({ email: 'linked@personal.test' })
+        .expect(200, {
+          success: true,
+          email: 'linked@personal.test',
+          affiliationId: 'https://ror.org/domain-affiliation',
+          displayName: 'Domain University',
+        });
+    expect(noEntityId.headers['cache-control']).toContain('no-store');
+    expect(findSsoEntityIdByURI).not.toHaveBeenCalled();
 
     const passthrough = await request(app).post('/sso')
       .send({ email: ssoCheck.body.email, entityId: ssoCheck.body.entityId })
       .expect(302);
-    expect(passthrough.headers.location).toContain('entityId=https%3A%2F%2Fidp.example.test');
+    expect(passthrough.headers.location).toContain('entityID=https%3A%2F%2Fidp.example.test');
 
+    jest.spyOn(users, 'findAffiliationByEmail')
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined);
     await request(app).post('/sso-check')
       .send({ email: 'nobody@missing.test' })
-      .expect(404, { success: false, message: 'No SSO entityId found for this email' });
+      .expect(404, { success: false, message: 'No affiliation found for this email' });
     await request(app).get('/sso-check')
       .query({ email: 'invalid' })
       .expect(400, { success: false, message: 'Invalid email address' });
@@ -700,8 +781,30 @@ describe('authentication routes', () => {
 
     await request(app).get('/sso/callback')
       .set('x-shib-eppn', 'alice@example.test')
+      .set('x-shib-session-id', 'sso-session')
+      .set('x-shib-identity-provider', 'https://idp.example.test')
       .set('x-shib-mail', 'alice@example.test')
-      .expect(403, { success: false, message: 'Untrusted Shibboleth proxy' });
+      .expect(401, { success: false, message: 'Untrusted Shibboleth proxy' });
+  });
+
+  it('rejects Shibboleth headers missing an entityId', async () => {
+    const { app } = await buildApp();
+
+    await request(app).get('/sso/callback')
+      .set('x-shib-eppn', 'alice@example.test')
+      .set('x-shib-session-id', 'sso-session')
+      .set('x-shib-mail', 'alice@example.test')
+      .expect(401, { success: false, message: 'Untrusted Shibboleth proxy' });
+  });
+
+  it('rejects Shibboleth headers missing an Shibboleth sessionId', async () => {
+    const { app } = await buildApp();
+
+    await request(app).get('/sso/callback')
+      .set('x-shib-eppn', 'alice@example.test')
+      .set('x-shib-identity-provider', 'https://idp.example.test')
+      .set('x-shib-mail', 'alice@example.test')
+      .expect(401, { success: false, message: 'Untrusted Shibboleth proxy' });
   });
 
   it('rejects malformed trusted-proxy secrets and reports invalid access cookies during sign-out', async () => {
@@ -709,9 +812,11 @@ describe('authentication routes', () => {
 
     await request(app).get('/sso/callback')
       .set('x-shib-proxy-secret', 'wrong-secret')
+      .set('x-shib-session-id', 'sso-session')
+      .set('x-shib-identity-provider', 'https://idp.example.test')
       .set('x-shib-eppn', 'alice@example.test')
       .set('x-shib-mail', 'alice@example.test')
-      .expect(403, { success: false, message: 'Untrusted Shibboleth proxy' });
+      .expect(401, { success: false, message: 'Untrusted Shibboleth proxy' });
 
     const csrf = await request(app).get('/csrf').expect(200);
     await request(app).post('/sign-out')
@@ -729,8 +834,11 @@ describe('authentication routes', () => {
       .expect(302);
     const shibbolethLogin = new URL(passthru.headers.location, 'http://auth.example.test');
     expect(shibbolethLogin.pathname).toBe('/Shibboleth.sso/Login');
-    expect(shibbolethLogin.searchParams.get('entityId')).toBe('https://idp.example.test');
-    expect(shibbolethLogin.searchParams.get('target')).toBe('http://auth.example.test/sso/callback');
+    expect(shibbolethLogin.searchParams.get('entityID')).toBe('https://idp.example.test');
+    const target = new URL(shibbolethLogin.searchParams.get('target')!);
+    expect(target.origin).toBe('http://auth.example.test');
+    expect(target.pathname).toBe('/sso/callback');
+    expect(target.search).toBe('');
 
     const callback = await agent.get('/sso/callback/sso-session')
       .set(shibbolethProxyHeaders)
@@ -739,10 +847,21 @@ describe('authentication routes', () => {
       .set('x-shib-givenname', 'Alice')
       .set('x-shib-sn', 'Example')
       .set('x-shib-session-id', 'sso-session')
+      .set('x-shib-identity-provider', 'https://idp.example.test')
       .expect(302);
     expect(callback.headers.location).toBe('/signup');
-    expect(cookie(callback, 'test_sso_pending')).toBe('sso-session');
-    await expect(cache.get('auth:sso-pending:sso-session')).resolves.toEqual(expect.stringContaining('alice@example.test'));
+    const pendingToken = cookie(callback, 'test_sso_pending');
+    expect(pendingToken).toBeDefined();
+    const pendingSignup = decodeJwt(pendingToken!);
+    const signupId = pendingSignup.signupId as string;
+    expect(pendingSignup).toMatchObject({
+      email: 'alice@example.test',
+      givenName: '',
+      surName: 'Example',
+      affiliation: 'Example University',
+      affiliationId: 'https://ror.org/example',
+    });
+    await expect(cache.get(`auth:sso-pending:${signupId}`)).resolves.toEqual(expect.stringContaining('alice@example.test'));
     expect(cookie(callback, 'test_access')).toBeUndefined();
     expect(cookie(callback, 'test_refresh')).toBeUndefined();
 
@@ -750,25 +869,29 @@ describe('authentication routes', () => {
     const signup = await agent.post('/sign-up')
       .set('X-CSRF-Token', csrf.headers['x-csrf-token'] as string)
       .send({
-        password: 'Passw0rd!',
+        email: 'alice@example.test',
         givenName: 'Alice',
         surName: 'Example',
-        affiliationId: 'https://ror.org/example',
         acceptedTerms: 'true',
       })
       .expect(201, { success: true, message: 'ok' });
     expect(database.findUserByEmail('alice@example.test')).toMatchObject({
       email: 'alice@example.test',
-      ssoId: 'alice@example.test',
       role: 'RESEARCHER',
     });
+    const createdUser = database.findUserByEmail('alice@example.test');
+    const pepperedSsoId = crypto
+      .createHmac('sha256', 'test-pepper-secret')
+      .update('alice@example.test')
+      .digest('hex');
+    expect(pepperedSsoId).toEqual(createdUser!.ssoId!);
     expect(cookie(signup, 'test_access')).toBeDefined();
     expect(cookie(signup, 'test_refresh')).toBeDefined();
-    expect(cookie(signup, 'test_sso_pending')).toBeDefined();
-    await expect(cache.get('auth:sso-pending:sso-session')).resolves.toBeUndefined();
+    expect(setCookies(signup).join(';')).toContain('test_sso_pending=;');
+    await expect(cache.get(`auth:sso-pending:${signupId}`)).resolves.toBeUndefined();
   });
 
-  it('issues tokens when a Shibboleth assertion matches an existing SSO user', async () => {
+  it('does not issue tokens for an unlinked Shibboleth assertion', async () => {
     const { app } = await buildApp();
     const agent = request.agent(app);
     const csrf = await agent.get('/csrf').expect(200);
@@ -781,7 +904,6 @@ describe('authentication routes', () => {
         givenName: 'Alice',
         surName: 'Example',
         affiliationId: 'https://ror.org/example',
-        ssoId: 'alice@example.test',
         acceptedTerms: 'true',
       })
       .expect(201);
@@ -789,12 +911,211 @@ describe('authentication routes', () => {
     const callback = await request(app).get('/sso/callback')
       .set(shibbolethProxyHeaders)
       .set('x-shib-eppn', 'alice@example.test')
-      .set('x-shib-mail', 'alice@example.test')
+      .set('x-shib-session-id', 'sso-session')
+      .set('x-shib-identity-provider', 'https://idp.example.test')
+      .set('x-shib-mail', 'unknown@example.test')
       .expect(302);
-    expect(callback.headers.location).toBe('/');
-    expect(cookie(callback, 'test_access')).toBeDefined();
-    expect(cookie(callback, 'test_refresh')).toBeDefined();
-    expect(decodeJwt(cookie(callback, 'test_access')!).email).toBe('alice@example.test');
+    expect(callback.headers.location).toBe('/signup');
+    expect(cookie(callback, 'test_access')).toBeUndefined();
+    expect(cookie(callback, 'test_refresh')).toBeUndefined();
+  });
+
+  it('links an SSO identity when an authenticated account completes the callback', async () => {
+    const { app, users } = await buildApp();
+    const agent = request.agent(app);
+    const csrf = await agent.get('/csrf').expect(200);
+    await agent.post('/sign-up')
+      .set('X-CSRF-Token', csrf.headers['x-csrf-token'] as string)
+      .send({
+        email: 'jdoe@example.test',
+        password: 'Passw0rd!',
+        givenName: 'John',
+        surName: 'Doe',
+        affiliationId: '',
+        acceptedTerms: 'true',
+      })
+      .expect(201);
+
+    const linkSsoId = jest.spyOn(users, 'linkSsoId');
+    const callback = await agent.get('/sso/callback')
+      .set(shibbolethProxyHeaders)
+      .set('x-shib-eppn', 'mock:john.doe@example.test')
+      .set('x-shib-mail', 'john.doe@example.test')
+      .set('x-shib-session-id', 'sso-session')
+      .set('x-shib-identity-provider', 'https://idp.example.test')
+      .expect(302);
+
+    expect(linkSsoId).toHaveBeenCalledWith('1', 'mock:john.doe@example.test');
+    expect(callback.headers.location).toBe('/account/connections?linked=true');
+  });
+
+  it('rejects linking a second SSO identity to an authenticated account', async () => {
+    const { app, users } = await buildApp();
+    const agent = request.agent(app);
+    const csrf = await agent.get('/csrf').expect(200);
+    await agent.post('/sign-up')
+      .set('X-CSRF-Token', csrf.headers['x-csrf-token'] as string)
+      .send({
+        email: 'jdoe@example.test',
+        password: 'Passw0rd!',
+        givenName: 'John',
+        surName: 'Doe',
+        affiliationId: '',
+        acceptedTerms: 'true',
+      })
+      .expect(201);
+
+    await agent.get('/sso/callback')
+      .set(shibbolethProxyHeaders)
+      .set('x-shib-eppn', 'mock:john.doe@example.test')
+      .set('x-shib-mail', 'john.doe@example.test')
+      .set('x-shib-session-id', 'sso-session')
+      .set('x-shib-identity-provider', 'https://idp.example.test')
+      .expect(302);
+
+    jest.spyOn(users, 'findById').mockResolvedValueOnce({
+      id: '1',
+      email: 'jdoe@example.test',
+      hasSSO: true,
+    } as never);
+
+    await agent.get('/sso/callback')
+      .set(shibbolethProxyHeaders)
+      .set('x-shib-eppn', 'mock:john.doe@other.example.test')
+      .set('x-shib-mail', 'john.doe@other.example.test')
+      .set('x-shib-session-id', 'another-sso-session')
+      .set('x-shib-identity-provider', 'https://idp.example.test')
+      .expect(409, { success: false, message: 'Account is already linked to an SSO identity' });
+  });
+
+  it('does not link a pending SSO identity during password sign-in', async () => {
+    const { app, cache, users } = await buildApp();
+    const agent = request.agent(app);
+    const signupCsrf = await agent.get('/csrf').expect(200);
+    await agent.post('/sign-up')
+      .set('X-CSRF-Token', signupCsrf.headers['x-csrf-token'] as string)
+      .send({
+        email: 'jdoe@example.test',
+        password: 'Passw0rd!',
+        givenName: 'John',
+        surName: 'Doe',
+        affiliationId: '',
+        acceptedTerms: 'true',
+      })
+      .expect(201);
+
+    const signoutCsrf = await agent.get('/csrf').expect(200);
+    await agent.post('/sign-out')
+      .set('X-CSRF-Token', signoutCsrf.headers['x-csrf-token'] as string)
+      .expect(200);
+
+    const callback = await agent.get('/sso/callback')
+      .set(shibbolethProxyHeaders)
+      .set('x-shib-eppn', 'mock:john.doe@example.test')
+      .set('x-shib-mail', 'john.doe@example.test')
+      .set('x-shib-session-id', 'sso-session')
+      .set('x-shib-identity-provider', 'https://idp.example.test')
+      .expect(302);
+    const pendingToken = cookie(callback, 'test_sso_pending');
+    const signupId = decodeJwt(pendingToken!).signupId as string;
+
+    const linkSsoId = jest.spyOn(users, 'linkSsoId');
+    const signInCsrf = await agent.get('/csrf').expect(200);
+    await agent.post('/sign-in')
+      .set('X-CSRF-Token', signInCsrf.headers['x-csrf-token'] as string)
+      .send({ email: 'jdoe@example.test', password: 'Passw0rd!' })
+      .expect(200, { success: true, message: 'ok' });
+
+    expect(linkSsoId).not.toHaveBeenCalled();
+    await expect(cache.get(`auth:sso-pending:${signupId}`)).resolves.toBeDefined();
+  });
+
+  it('does not claim invitations for a pending SSO signup with a different email', async () => {
+    const { app, users } = await buildApp();
+    const agent = request.agent(app);
+
+    await agent.get('/sso/callback')
+      .set(shibbolethProxyHeaders)
+      .set('x-shib-eppn', 'alice@example.test')
+      .set('x-shib-mail', 'alice@example.test')
+      .set('x-shib-session-id', 'sso-session')
+      .set('x-shib-identity-provider', 'https://idp.example.test')
+      .expect(302);
+
+    const create = jest.spyOn(users, 'create');
+    const csrf = await agent.get('/csrf').expect(200);
+    await agent.post('/sign-up')
+      .set('X-CSRF-Token', csrf.headers['x-csrf-token'] as string)
+      .send({
+        email: 'invited@example.test',
+        givenName: 'Alice',
+        surName: 'Example',
+        acceptedTerms: 'true',
+      })
+      .expect(201);
+
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({
+      claimOpenInvitations: false,
+    }));
+  });
+
+  it('sends an account-lock notification after the locking sign-in attempt', async () => {
+    const { app, users } = await buildApp();
+    jest.spyOn(users, 'authenticate').mockResolvedValueOnce({
+      id: 'locked-user',
+      email: 'alice@example.test',
+      locked: true,
+      wasJustLocked: true,
+    } as never);
+
+    const csrf = await request(app).get('/csrf').expect(200);
+    await request(app).post('/sign-in')
+      .set('X-CSRF-Token', csrf.headers['x-csrf-token'] as string)
+      .send({ email: 'alice@example.test', password: 'Passw0rd!' })
+      .expect(401, { success: false, message: 'Invalid credentials' });
+
+    expect(sendMail).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects SSO assertions from an unconfigured identity provider', async () => {
+    const { app, users } = await buildApp();
+    jest.spyOn(users, 'findSsoEntityIdById').mockResolvedValueOnce(undefined);
+
+    await request(app).get('/sso/callback')
+      .set(shibbolethProxyHeaders)
+      .set('x-shib-eppn', 'alice@example.test')
+      .set('x-shib-mail', 'alice@example.test')
+      .set('x-shib-session-id', 'sso-session')
+      .set('x-shib-identity-provider', 'https://unknown-idp.example.test')
+      .expect(400, { success: false, message: 'No SSO entity info found for this entityId' });
+  });
+
+  it('does not link a locked account from an SSO assertion', async () => {
+    const { app, users } = await buildApp();
+    jest.spyOn(users, 'findByEmail').mockResolvedValueOnce({
+      id: 'locked-user',
+      email: 'alice@example.test',
+      givenName: 'Alice',
+      surName: 'Example',
+      role: 'RESEARCHER',
+      affiliationId: '',
+      languageId: '',
+      acceptedTerms: true,
+      locked: true,
+      remainingSignInAttempts: 0,
+      tokenVersion: 0,
+    } as never);
+    const linkSsoId = jest.spyOn(users, 'linkSsoId');
+
+    await request(app).get('/sso/callback')
+      .set(shibbolethProxyHeaders)
+      .set('x-shib-eppn', 'mock:alice@example.test')
+      .set('x-shib-mail', 'alice@example.test')
+      .set('x-shib-session-id', 'sso-session')
+      .set('x-shib-identity-provider', 'https://idp.example.test')
+      .expect(401, { success: false, message: 'Account is locked' });
+
+    expect(linkSsoId).not.toHaveBeenCalled();
   });
 
   it('resolves database OAuth clients after the provider has started', async () => {
@@ -893,7 +1214,7 @@ describe('authentication routes', () => {
       acceptedTerms: true,
       locked: false,
       remainingSignInAttempts: 0
-    });
+    } as never);
 
     const invalidClient = await request(app).get('/auth')
       .query({
@@ -1150,6 +1471,8 @@ describe('authentication routes', () => {
       .set(shibbolethProxyHeaders)
       .set('x-shib-eppn', 'new@example.test')
       .set('x-shib-mail', 'new@example.test')
+      .set('x-shib-identity-provider', 'https://idp.example.test')
+      .set('x-shib-session-id', 'new-session')
       .expect(302)
       .expect('Location', '/signup');
 
@@ -1158,7 +1481,10 @@ describe('authentication routes', () => {
       .set(shibbolethProxyHeaders)
       .set('x-shib-eppn', 'locked@example.test')
       .set('x-shib-mail', 'locked@example.test')
-      .expect(403, { success: false, message: 'Your account has been locked' });
+      .set('x-shib-identity-provider', 'https://idp.example.test')
+      .set('x-shib-session-id', 'locked-session')
+      .expect(302)
+      .expect('Location', '/');
 
     jest.spyOn(provider, 'interactionDetails').mockRejectedValueOnce(new Error('Interaction unavailable'));
     await request(app).get('/interaction/failed').expect(500, { success: false, message: 'Internal server error' });
