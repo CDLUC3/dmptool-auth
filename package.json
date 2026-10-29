@@ -19,7 +19,7 @@
     "trivy-all": "npm run trivy-high && npm run trivy-med"
   },
   "dependencies": {
-    "@dmptool/utils": "^2.1.9",
+    "@dmptool/utils": "^2.2.3",
     "@keyv/valkey": "^1.0.11",
     "bcryptjs": "^3.0.3",
     "cookie-parser": "^1.4.7",
@@ -53,5 +53,8 @@
     "ts-jest": "^29.4.5",
     "tsx": "^4.21.0",
     "typescript": "npm:@typescript/typescript6@^6.0.2"
+  },
+  "overrides": {
+    "argparse": "3.0.2"
   }
 }

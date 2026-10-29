@@ -151,8 +151,8 @@ export const createApp = (
         if (!origin) return callback(null, true);
 
         const allowedOrigins = [
-          `http://${process.env.domain}`,
-          `https://${process.env.domain}`,
+          `http://${process.env.DOMAIN}`,
+          `https://${process.env.DOMAIN}`,
         ];
 
         if (allowedOrigins.includes(origin) || ['development', 'test'].includes(config.env)) {
@@ -326,7 +326,7 @@ export const createApp = (
         const generalError: string | undefined = user.errors?.general;
         const status: number = generalError === 'A user with this email already exists'
           ? 409 : generalError === undefined ? 400 : 500;
-        
+
         response.status(status).json({
           success: false,
           message: (user.errors || {})['general'] || 'Unable to create your account.',
@@ -598,6 +598,35 @@ export const createApp = (
       }
       next(error);
     }
+  });
+
+  /**
+   * Check if an email address is associated with an SSO entity.
+   *
+   * @route GET /sso-check
+   * @param request The Express request object
+   * @param response The Express response object
+   * @param next The next middleware function in the stack
+   * @returns A JSON response indicating whether the email is associated with an SSO entity and the corresponding entityId
+   */
+  app.all('/sso-check', nocache, async (request: Request, response: Response): Promise<void> => {
+    const values: unknown = request.method === 'GET' ? request.query : request.body;
+    const { email } = values as Record<string, string>;
+    if (!email || !email.includes('@')) {
+      config.logger.warn({ email }, 'SSO Check - invalid email');
+      response.status(400).json({ success: false, message: 'Invalid email address' });
+      return;
+    }
+
+    const entityId = await users.findSsoEntityId(email);
+    if (!entityId) {
+      config.logger.warn({ email }, 'SSO Check - no entityId found for email');
+      response.status(404).json({ success: false, message: 'No SSO entityId found for this email' });
+      return;
+    }
+
+    config.logger.debug({ email, entityId }, 'SSO Check - entityId found');
+    response.status(200).json({ success: true, email, entityId });
   });
 
   /**

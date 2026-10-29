@@ -15,8 +15,7 @@ ENV CI=true
 COPY package*.json ./
 
 # Install dependencies in /app (excluding devDependencies)
-# RUN npm ci
-RUN npm install
+RUN npm ci
 
 # Step 2: Builder
 FROM public.ecr.aws/amazonlinux/amazonlinux:2023 AS builder
@@ -24,9 +23,6 @@ FROM public.ecr.aws/amazonlinux/amazonlinux:2023 AS builder
 RUN dnf -y install nodejs22
 
 WORKDIR /app
-
-# Set production environment
-ENV CI=true
 
 # Copy dependencies from deps stage
 COPY --from=deps /app/node_modules ./node_modules
@@ -50,9 +46,12 @@ RUN rm -fr /var/cache/dnf/* && dnf clean all && dnf -y update && dnf -y install 
 
 WORKDIR /app
 
+# Copy package.json & install only prod dependencies
+COPY package*.json ./
+RUN npm ci --omit=dev
+
 # Only copy the compiled code and the pruned node_modules
 COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/node_modules ./node_modules
 
 EXPOSE 4646
 
