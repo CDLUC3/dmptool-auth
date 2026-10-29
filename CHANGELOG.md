@@ -6,6 +6,8 @@
 - Added `OIDC_CLIENT_CREDENTIALS_TOKEN_TTL` environment variable to configure the lifetime of the client-credentials access-token.
 
 ## v1.0.1
+- Fixed issue where a user could not sign up with affiliation "OTHER". It was inserting "Other" as the `affiliationId` in the `users` table.
+- Updated `/sign-out` function to revoke `jti` rather than `userId`, so that user can sign out and log back in with a valid access token before the 15-minute period. Updated `revoke` and `isRevoked` in `tokenService.ts`to use `jti` rather than `userId` to revoke. Also, addressed `zod` and `body-parser` vulnerabilities.
 - Added `AGENTS.md` and `CLAUDE.md` files
 - Fix issue where the `affiliation` and `affiliationId` in the token were incorrect and causing the UI to send back the affiliation's display name in the final sign up
 - Fix a logic issue where an SSO sign up that has an exact match on the email the SSO returned to an entry in the `userEmails` table was logging in, but not linking the account.

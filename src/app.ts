@@ -305,6 +305,7 @@ export const createApp = (
       const givenName: string | undefined = body.givenName;
       const surName: string | undefined = body.surName;
       const affiliationId: string | undefined = body.affiliationId || assertion?.affiliation;
+      const otherAffiliationName: string | undefined = body.otherAffiliationName;
       const acceptedTerms: boolean = typeof body.acceptedTerms === 'string'
           ? ['1', 'true', 'yes'].includes(body.acceptedTerms.toLowerCase())
           : Boolean(body.acceptedTerms);
@@ -326,13 +327,17 @@ export const createApp = (
         return;
       }
 
-      config.logger.debug({ email, givenName, surName, affiliationId }, 'Sign up - received request');
+      config.logger.debug(
+        { email, givenName, surName, affiliationId, otherAffiliationName },
+        'Sign up - received request',
+      );
       const user: SignupAttempt = await users.create({
         email,
         password,
         givenName,
         surName,
         affiliationId: affiliationId ?? '',
+        otherAffiliationName,
         languageId: languageId ?? '',
         role: 'RESEARCHER', // We always default to RESEARCHER for new signups
         ssoId,
