@@ -221,6 +221,7 @@ export const loadConfig = async (logger: Logger): Promise<Config> => {
       oidcRefresh: Number.parseInt(process.env.OIDC_REFRESH_TOKEN_TTL ?? '3.154e+7', 10),
       oidcGrant: Number.parseInt(process.env.OIDC_GRANT_TTL ?? '120', 10),
       oidcIdToken: Number.parseInt(process.env.OIDC_ID_TOKEN_TTL ?? '600', 10),
+      oidcClientCredentialsToken: Number.parseInt(process.env.OIDC_CLIENT_CREDENTIALS_TOKEN_TTL ?? '3600', 10),
       oidcInteraction: Number.parseInt(process.env.OIDC_INTERACTION_TTL ?? '600', 10),
     },
 

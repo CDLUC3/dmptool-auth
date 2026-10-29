@@ -53,6 +53,7 @@ export interface Config {
     oidcRefresh: number;
     oidcGrant: number;
     oidcIdToken: number;
+    oidcClientCredentialsToken: number;
     oidcInteraction: number;
   };
 
