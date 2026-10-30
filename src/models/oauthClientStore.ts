@@ -19,11 +19,14 @@ export class OauthClientStore {
       `SELECT c.clientId, c.clientSecret, c.clientName, c.applicationType,
               c.tokenEndpointAuthMethod, c.grantTypes, c.responseTypes, c.requirePkce,
               c.clientMetadata,
-              GROUP_CONCAT(r.redirect_uri, SEPARATOR ',') as redirectUris
+              GROUP_CONCAT(r.redirectUri SEPARATOR ',') as redirectUris
        FROM ${clientsTable} c
-       LEFT JOIN ${redirectUrisTable} r ON r.client_id = c.client_id
+       LEFT JOIN ${redirectUrisTable} r ON r.clientId = c.clientId
        WHERE c.active = TRUE AND c.clientId = ?
-       ORDER BY c.id, r.id`,
+       GROUP BY c.clientId, c.clientSecret, c.clientName, c.applicationType,
+                c.tokenEndpointAuthMethod, c.grantTypes, c.responseTypes, c.requirePkce,
+                c.clientMetadata, r.id
+       ORDER BY c.clientId, r.id`,
       [clientId],
     );
     if (!response || !Array.isArray(response.results) || !response.results[0]) return undefined;
@@ -36,11 +39,14 @@ export class OauthClientStore {
       `SELECT c.clientId, c.clientSecret, c.clientName, c.applicationType,
               c.tokenEndpointAuthMethod, c.grantTypes, c.responseTypes, c.requirePkce,
               c.clientMetadata,
-              GROUP_CONCAT(r.redirect_uri, SEPARATOR ',') as redirectUris
+              GROUP_CONCAT(r.redirectUri SEPARATOR ',') as redirectUris
        FROM ${clientsTable} c
-       LEFT JOIN ${redirectUrisTable} r ON r.client_id = c.client_id
+       LEFT JOIN ${redirectUrisTable} r ON r.clientId = c.clientId
        WHERE c.active = TRUE
-       ORDER BY c.id, r.id`,
+       GROUP BY c.clientId, c.clientSecret, c.clientName, c.applicationType,
+                c.tokenEndpointAuthMethod, c.grantTypes, c.responseTypes, c.requirePkce,
+                c.clientMetadata, r.id
+       ORDER BY c.clientId, r.id`,
     );
 
     if (response && Array.isArray(response.results) && response.results.length > 0) {

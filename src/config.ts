@@ -158,6 +158,7 @@ export const loadConfig = async (logger: Logger): Promise<Config> => {
 
   const cacheConfig: KeyvValkeyOptions = getCacheConfig();
   const issuer = requiredUrl('ISSUER', 'http://localhost:3000');
+  const oidcApiResourceUri = requiredUrl('OIDC_API_RESOURCE_URI', 'http://localhost:4060');
   const audienceUI: string = process.env.AUDIENCE_UI || 'my-ui';
   const audienceAPI: string = process.env.AUDIENCE_API || 'my-api';
 
@@ -191,6 +192,7 @@ export const loadConfig = async (logger: Logger): Promise<Config> => {
     ses: sesConfig,
 
     issuer,
+    oidcApiResourceUri,
     audienceUI,
     audienceAPI,
     cookieSecure,

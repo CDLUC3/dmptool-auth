@@ -25,6 +25,7 @@ services:
       - "NODE_ENV=development"
       - "PORT=4646"
       - "ISSUER=http://auth:4646"
+      - "OIDC_API_RESOURCE_URI=http://api:4060"
 
       - "DB_HOST=apollo-mysql"
       - "DB_PORT=3306"

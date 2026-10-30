@@ -19,6 +19,7 @@ export interface Config {
   maxFailedSignInAttempts: number;
 
   issuer: string;
+  oidcApiResourceUri: string;
   audienceUI: string;
   audienceAPI: string;
 

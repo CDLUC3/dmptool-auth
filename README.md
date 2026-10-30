@@ -82,7 +82,7 @@ flowchart TB
 
 Active OAuth clients are resolved from the `oauth_clients` and `oauth_client_redirect_uris` tables for every authorization and token request. `OIDC_CLIENTS_JSON` is a development/bootstrap fallback only when there are no active database registrations. Static client IDs take precedence, so do not duplicate static registrations in MySQL.
 
-The provider supports authorization-code, refresh-token, and client-credentials grants configured for each client. Client-credentials clients must be confidential and authenticate using their registered token endpoint authentication method. These tokens represent the client, not a user, and do not include user claims or refresh tokens; clients obtain a new access token with their client credentials when it expires. Clients can revoke their access tokens at the provider's revocation endpoint. PKCE is enforced for authorization-code clients when registration requires it. OIDC claims include `openid`, `profile`, `email`, and the service-specific `dmp` claims (`id`, `givenName`, `surName`, `role`, `affiliationId`, and `languageId`) for user grants.
+The provider supports authorization-code, refresh-token, and client-credentials grants configured for each client. Access tokens for the configured `AUDIENCE_API` are RS256 JWTs and can be verified using the published JWKS. Client-credentials clients must be confidential and authenticate using their registered token endpoint authentication method. These tokens represent the client, not a user, and do not include user claims or refresh tokens; clients obtain a new access token with their client credentials when it expires. Clients can revoke their access tokens at the provider's revocation endpoint. PKCE is enforced for authorization-code clients when registration requires it. OIDC claims include `openid`, `profile`, `email`, and the service-specific `dmp` claims (`id`, `givenName`, `surName`, `role`, `affiliationId`, and `languageId`) for user grants.
 
 ```mermaid
 sequenceDiagram
@@ -187,7 +187,8 @@ The service reads all configuration from environment variables and AWS SSM Param
 | `PORT` | No | `3000` | HTTP listen port. |
 | `ISSUER` | Production | `http://localhost:3000` | Public issuer URL, without a trailing slash. Must be HTTPS in production. |
 | `AUDIENCE_UI` | Yes | `my-ui` | The audience name to use for the UI access token. |
-| `AUDIENCE_API` | Yes | `my-api` | The audience name to use for the API access token. |
+| `AUDIENCE_API` | Yes | `my-api` | The JWT audience claim for API access tokens. |
+| `OIDC_API_RESOURCE_URI` | No | `http://localhost:4060` | Absolute URI used as the OAuth resource indicator for API access tokens. This is distinct from `AUDIENCE_API`; pass this URI as the `resource` parameter if selecting it explicitly. |
 | `DOMAIN` | No | `localhost` | Public application domain used by service integrations. |
 | `APPLICATION_NAME` | No | `my app` | Application name used in email content. |
 | `HELP_DESK_ADDRESS` | No | `help@example.com` | Help-desk address used in email content. |
