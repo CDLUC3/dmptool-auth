@@ -1,6 +1,11 @@
 # dmptool-auth CHANGELOG
 
 ## v1.0.2
+- Added `OIDC_API_RESOURCE_URI` ENV variable to identify the Location of the REST API
+- Added a separate absolute API resource URI setting for OAuth resource indicators `OIDC_API_RESOURCE_URI`.
+- Logic to issue RS256 JWT access tokens for the configured API audience in `authorization-code` and `client-credentials` grants.
+- Fixed several bugs with existing queries on the `oauthClients` and `oidcRecords` tables
+- Updated README
 - Updated `/sign-out` function to revoke `jti` rather than `userId`, so that user can sign out and log back in with a valid access token before the 15-minute period. Updated `revoke` and `isRevoked` in `tokenService.ts`to use `jti` rather than `userId` to revoke. Also, addressed `zod` and `body-parser` vulnerabilities.
 - Added OAuth 2.0 client-credentials access-token issuance and client-authenticated token revocation.
 - Added `OIDC_CLIENT_CREDENTIALS_TOKEN_TTL` environment variable to configure the lifetime of the client-credentials access-token.

@@ -10,9 +10,10 @@ import { createProvider } from './oidc.js';
 import { createApp } from './app.js';
 import { initializeEmailTransporter } from './email.js';
 import { TokenService } from './tokenService.js';
-import type { Config } from './types.js';
+import type { Config, OAuthClient } from './types.js';
 import { KeyStore } from './models/keyStore.js';
 import { UserStore } from './models/userStore.js';
+import { OauthClientStore } from "./models/oauthClientStore.js";
 
 // Initialize the logger
 const logLevel: LogLevelEnum = process.env.LOG_LEVEL
@@ -28,6 +29,8 @@ const emailer: Mail<SMTPSentMessageInfo> = initializeEmailTransporter(config);
 const cache = new Cache(config);
 const keys: KeyStore = await KeyStore.load(config);
 const users = new UserStore(config);
+const clientStore = new OauthClientStore();
+const clients: OAuthClient[] = await clientStore.listActive(config) || [];
 
 // set up the OIDC provider
 const provider: Provider = createProvider(
@@ -35,6 +38,7 @@ const provider: Provider = createProvider(
   cache,
   users,
   keys,
+  clients
 );
 
 // Create and start the Express application
