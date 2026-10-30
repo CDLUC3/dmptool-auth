@@ -10,7 +10,7 @@ import { createProvider } from './oidc.js';
 import { createApp } from './app.js';
 import { initializeEmailTransporter } from './email.js';
 import { TokenService } from './tokenService.js';
-import type {Config, OAuthClient} from './types.js';
+import type { Config, OAuthClient } from './types.js';
 import { KeyStore } from './models/keyStore.js';
 import { UserStore } from './models/userStore.js';
 import { OauthClientStore } from "./models/oauthClientStore.js";
