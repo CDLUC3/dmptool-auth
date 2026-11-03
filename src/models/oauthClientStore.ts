@@ -17,16 +17,16 @@ export class OauthClientStore {
     const response: dbQueryResponse = await queryTable(
       { ...config.database, logger: config.logger },
       `SELECT c.clientId, c.clientSecret, c.clientName, c.applicationType,
-              c.tokenEndpointAuthMethod, c.grantTypes, c.responseTypes, c.requirePkce,
-              c.clientMetadata,
+              c.tokenEndpointAuthMethod, c.grantTypes, c.responseTypes, c.pkce,
+              c.extraClientMetadata,
               GROUP_CONCAT(r.redirectUri SEPARATOR ',') as redirectUris
        FROM ${clientsTable} c
        LEFT JOIN ${redirectUrisTable} r ON r.clientId = c.clientId
        WHERE c.active = TRUE AND c.clientId = ?
        GROUP BY c.clientId, c.clientSecret, c.clientName, c.applicationType,
-                c.tokenEndpointAuthMethod, c.grantTypes, c.responseTypes, c.requirePkce,
-                c.clientMetadata, r.id
-       ORDER BY c.clientId, r.id`,
+                c.tokenEndpointAuthMethod, c.grantTypes, c.responseTypes, c.pkce,
+                c.extraClientMetadata
+       ORDER BY c.clientId`,
       [clientId],
     );
     if (!response || !Array.isArray(response.results) || !response.results[0]) return undefined;
@@ -37,16 +37,16 @@ export class OauthClientStore {
     const response: dbQueryResponse = await queryTable(
       { ...config.database, logger: config.logger },
       `SELECT c.clientId, c.clientSecret, c.clientName, c.applicationType,
-              c.tokenEndpointAuthMethod, c.grantTypes, c.responseTypes, c.requirePkce,
-              c.clientMetadata,
+              c.tokenEndpointAuthMethod, c.grantTypes, c.responseTypes, c.pkce,
+              c.extraClientMetadata,
               GROUP_CONCAT(r.redirectUri SEPARATOR ',') as redirectUris
        FROM ${clientsTable} c
        LEFT JOIN ${redirectUrisTable} r ON r.clientId = c.clientId
        WHERE c.active = TRUE
        GROUP BY c.clientId, c.clientSecret, c.clientName, c.applicationType,
-                c.tokenEndpointAuthMethod, c.grantTypes, c.responseTypes, c.requirePkce,
-                c.clientMetadata, r.id
-       ORDER BY c.clientId, r.id`,
+                c.tokenEndpointAuthMethod, c.grantTypes, c.responseTypes, c.pkce,
+                c.extraClientMetadata
+       ORDER BY c.clientId`,
     );
 
     if (response && Array.isArray(response.results) && response.results.length > 0) {
@@ -64,8 +64,8 @@ export class OauthClientStore {
       token_endpoint_auth_method: client.tokenEndpointAuthMethod,
       grant_types: client.grantTypes,
       response_types: client.responseTypes,
-      require_pkce: !!client.requirePkce,
-      client_metadata: client.clientMetadata,
+      pkce: !!client.pkce,
+      extraClientMetadata: client.extraClientMetadata,
       redirect_uris: client.redirectUris ? (client.redirectUris as string).split(',') : [],
     };
   }

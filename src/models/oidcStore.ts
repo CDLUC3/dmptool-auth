@@ -5,9 +5,7 @@ import type { CacheInterface } from '../cache.js';
 import type { Config, dbQueryResponse, OidcRow } from "../types.js";
 import { OauthClientStore } from './oauthClientStore.js';
 
-
-
-const oidcTable: string = process.env.DB_OIDC_RECORDS_TABLE || 'oidc_records';
+const oidcTable: string = process.env.DB_OIDC_RECORDS_TABLE || 'oidcRecords';
 
 /**
  * Calculates the expiration date based on the provided expiresIn value.
