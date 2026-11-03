@@ -4,7 +4,10 @@ import type { Config, PublicUser } from '../types.js';
 const Provider = jest.fn();
 const createAdapter = jest.fn();
 
-jest.unstable_mockModule('oidc-provider', () => ({ default: Provider }));
+jest.unstable_mockModule('oidc-provider', () => ({
+  default: Provider,
+  errors: { InvalidTarget: class InvalidTarget extends Error {} },
+}));
 jest.unstable_mockModule('../models/oidcStore.js', () => ({ createAdapter }));
 
 const { createProvider } = await import('../oidc.js');
@@ -12,6 +15,8 @@ const { createProvider } = await import('../oidc.js');
 const logger = { warn: jest.fn() };
 const config = {
   issuer: 'https://auth.example.test',
+  oidcApiResourceUri: 'https://api.example.test/resource',
+  audienceAPI: 'https://api.example.test',
   oidcClients: [],
   logger,
   ttl: {
@@ -54,7 +59,18 @@ describe('OIDC provider configuration', () => {
 
     const configuration = Provider.mock.calls[0]?.[1] as {
       jwks: { keys: Array<{ kid: string }> };
-      features: { clientCredentials: { enabled: boolean } };
+      features: {
+        clientCredentials: { enabled: boolean };
+        resourceIndicators: {
+          defaultResource: () => string;
+          getResourceServerInfo: (_context: unknown, resource: string, client: { scope?: string }) => {
+            audience: string;
+            scope: string;
+            accessTokenFormat: string;
+            jwt: { sign: { alg: string } };
+          };
+        };
+      };
       findAccount: (_context: unknown, accountId: string) => Promise<{
         accountId: string;
         claims: () => Record<string, unknown>;
@@ -64,6 +80,16 @@ describe('OIDC provider configuration', () => {
     expect(createAdapter).toHaveBeenCalledWith(config, expect.anything());
     expect(configuration.jwks.keys).toEqual([{ kty: 'RSA', kid: 'private', d: 'private-material' }]);
     expect(configuration.features.clientCredentials.enabled).toBe(true);
+    const resourceServer = configuration.features.resourceIndicators.getResourceServerInfo(
+      {}, config.oidcApiResourceUri, { scope: 'dmp:read' },
+    );
+      expect(configuration.features.resourceIndicators.defaultResource()).toBe(config.oidcApiResourceUri);
+    expect(resourceServer).toEqual({
+      audience: config.audienceAPI,
+      scope: 'dmp:read',
+      accessTokenFormat: 'jwt',
+      jwt: { sign: { alg: 'RS256' } },
+    });
 
     const account = await configuration.findAccount({}, user.id);
     expect(account?.accountId).toBe(user.id);
@@ -88,19 +114,28 @@ describe('OIDC provider configuration', () => {
       const configuration = Provider.mock.calls[1]?.[1] as {
         findAccount: (_context: unknown, accountId: string) => Promise<undefined>;
         interactions: { url: (_context: unknown, interaction: { uid: string }) => string };
-        renderError: (context: { type?: string; body?: string }, output: { error: string }) => void;
+        renderError: (
+          context: { type?: string; body?: string },
+          output: { error: string; error_description?: string },
+        ) => void;
       };
       const context: { type?: string; body?: string } = {};
 
       await expect(configuration.findAccount({}, 'missing')).resolves.toBeUndefined();
       expect(configuration.interactions.url({}, { uid: 'interaction id' }))
         .toBe('https://login.example.test/authorize?uid=interaction%20id');
-      configuration.renderError(context, { error: 'invalid_request' });
+      configuration.renderError(context, {
+        error: 'invalid_client',
+        error_description: 'Client authentication failed',
+      });
       expect(context).toEqual(expect.objectContaining({
         type: 'html',
         body: expect.stringContaining('Authentication request could not be completed'),
       }));
-      expect(logger.warn).toHaveBeenCalledWith({ error: 'invalid_request' }, 'OIDC request rejected');
+      expect(logger.warn).toHaveBeenCalledWith({
+        error: 'invalid_client',
+        error_description: 'Client authentication failed',
+      }, 'OIDC request rejected');
 
       delete process.env.OAUTH2_SIGN_IN_URL;
       expect(configuration.interactions.url({}, { uid: 'local-id' })).toBe('/interaction/local-id');

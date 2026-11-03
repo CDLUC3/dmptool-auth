@@ -21,8 +21,8 @@ describe('OauthClientStore', () => {
         tokenEndpointAuthMethod: 'client_secret_basic',
         grantTypes: ['authorization_code', 'refresh_token'],
         responseTypes: ['code'],
-        requirePkce: 1,
-        clientMetadata: { post_logout_redirect_uris: ['https://app.example.test/logout'] },
+        pkce: 1,
+        extraClientMetadata: { post_logout_redirect_uris: ['https://app.example.test/logout'] },
         redirectUris: 'https://app.example.test/callback,https://app.example.test/alternate-callback',
       }],
       fields: [],
@@ -36,8 +36,8 @@ describe('OauthClientStore', () => {
       token_endpoint_auth_method: 'client_secret_basic',
       grant_types: ['authorization_code', 'refresh_token'],
       response_types: ['code'],
-      require_pkce: true,
-      client_metadata: { post_logout_redirect_uris: ['https://app.example.test/logout'] },
+      pkce: true,
+      extraClientMetadata: { post_logout_redirect_uris: ['https://app.example.test/logout'] },
       redirect_uris: ['https://app.example.test/callback', 'https://app.example.test/alternate-callback'],
     }]);
   });
@@ -66,7 +66,7 @@ describe('OauthClientStore', () => {
         tokenEndpointAuthMethod: 'none',
         grantTypes: ['authorization_code'],
         responseTypes: ['code'],
-        requirePkce: 0,
+        pkce: 0,
         clientMetadata: null,
         redirectUris: '',
       }],
@@ -74,7 +74,7 @@ describe('OauthClientStore', () => {
     });
 
     await expect(new OauthClientStore().listActive(config as never)).resolves.toEqual([
-      expect.objectContaining({ client_id: 'native', require_pkce: false, redirect_uris: [] }),
+      expect.objectContaining({ client_id: 'native', pkce: false, redirect_uris: [] }),
     ]);
   });
 
@@ -88,7 +88,7 @@ describe('OauthClientStore', () => {
         tokenEndpointAuthMethod: 'client_secret_basic',
         grantTypes: ['authorization_code'],
         responseTypes: ['code'],
-        requirePkce: 0,
+        pkce: 0,
         clientMetadata: null,
         redirectUris: 'https://external.example.test/callback',
       }],

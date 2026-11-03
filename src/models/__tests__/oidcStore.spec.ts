@@ -58,25 +58,25 @@ describe('OIDC adapters', () => {
     await adapter.upsert('one', { grantId: 'grant-1', uid: 'uid-1', userCode: 'code-1' }, 300);
     await expect(adapter.find('one')).resolves.toMatchObject({ grantId: 'grant-1' });
 
-    expect(queryTable.mock.calls[0][1]).toContain('grant_id, uid, user_code, expires_at');
+    expect(queryTable.mock.calls[0][1]).toContain('grantId, uid, userCode, expiresAt');
   });
 
-  it.failing('uses the stored snake_case user-code column for lookups', async () => {
+  it('uses the stored userCode column for lookups', async () => {
     queryTable.mockResolvedValueOnce({ results: [], fields: [] });
     const adapter = createAdapter(config as never, new MemoryCache() as never)('AccessToken');
 
     await adapter.findByUserCode('code-1');
 
-    expect(queryTable.mock.calls[0][1]).toContain('user_code = ?');
+    expect(queryTable.mock.calls[0][1]).toContain('userCode = ?');
   });
 
-  it('uses the stored snake_case grant column for revocation', async () => {
+  it('uses the stored grant column for revocation', async () => {
     queryTable.mockResolvedValueOnce({ results: { affectedRows: 1 }, fields: [] });
     const adapter = createAdapter(config as never, new MemoryCache() as never)('AccessToken');
 
     await adapter.revokeByGrantId('grant-1');
 
-    expect(queryTable.mock.calls[0][1]).toContain('grant_id = ?');
+    expect(queryTable.mock.calls[0][1]).toContain('grantId = ?');
   });
 
   it('stores, consumes, locates, destroys, and revokes refresh-token records in the cache', async () => {

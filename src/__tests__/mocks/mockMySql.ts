@@ -149,7 +149,7 @@ export class MockMySqlStore {
       return result(1);
     }
 
-    if (sql.startsWith('INSERT INTO oidc_records')) {
+    if (sql.startsWith('INSERT INTO oidc')) {
       const [model, id, payload, grantId, uid, userCode, expiresAt] = values;
       this.oidcRecords.set(`${model}:${id}`, {
         model: String(model),
@@ -162,7 +162,7 @@ export class MockMySqlStore {
       });
       return result(1);
     }
-    if (sql.startsWith('SELECT payload FROM oidc_records')) {
+    if (sql.startsWith('SELECT payload FROM oidc')) {
       const [model, lookup] = values;
       const record = [...this.oidcRecords.values()].find((candidate) =>
         candidate.model === model
@@ -173,7 +173,7 @@ export class MockMySqlStore {
       );
       return { results: record ? [{ payload: record.payload }] : [], fields: [] };
     }
-    if (sql.startsWith('DELETE FROM oidc_records')) {
+    if (sql.startsWith('DELETE FROM oidc')) {
       const [model, lookup] = values;
       const records = [...this.oidcRecords.values()].filter((candidate) =>
         candidate.model === model
@@ -195,8 +195,8 @@ export class MockMySqlStore {
           tokenEndpointAuthMethod: client.token_endpoint_auth_method,
           grantTypes: client.grant_types,
           responseTypes: client.response_types,
-          requirePkce: client.require_pkce ? 1 : 0,
-          clientMetadata: client.client_metadata,
+          pkce: client.pkce ? 1 : 0,
+          extraClientMetadata: client.extraClientMetadata,
           redirectUris: client.redirect_uris.join(','),
         }));
       return { results: clients, fields: [] };

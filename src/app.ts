@@ -849,6 +849,7 @@ export const createApp = (
     try {
       const details: Interaction = await provider.interactionDetails(request, response);
       config.logger.debug({ details }, 'OIDC interaction - received request');
+
       response.status(200).json({
         uid: details.uid,
         prompt: details.prompt.name,
@@ -873,6 +874,7 @@ export const createApp = (
   app.post('/interaction/:uid', async (request: Request, response: Response, next: NextFunction): Promise<void> => {
     try {
       const details: Interaction = await provider.interactionDetails(request, response);
+
       // Handle login interaction
       if (details.prompt.name === 'login') {
         config.logger.debug({ details }, 'OIDC interaction - login initiated');

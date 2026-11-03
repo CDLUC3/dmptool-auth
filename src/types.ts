@@ -19,6 +19,7 @@ export interface Config {
   maxFailedSignInAttempts: number;
 
   issuer: string;
+  oidcApiResourceUri: string;
   audienceUI: string;
   audienceAPI: string;
 
@@ -157,8 +158,8 @@ export interface OAuthClientRow {
   tokenEndpointAuthMethod: string;
   grantTypes: unknown;
   responseTypes: unknown;
-  requirePkce: number;
-  clientMetadata: unknown;
+  pkce: number;
+  extraClientMetadata: unknown;
   redirectUris: string;
 }
 
@@ -171,8 +172,8 @@ export interface OAuthClient {
   token_endpoint_auth_method: string;
   grant_types: unknown;
   response_types: unknown;
-  require_pkce: boolean;
-  client_metadata: unknown;
+  pkce: boolean;
+  extraClientMetadata: unknown;
   redirect_uris: string[];
 }
 

@@ -42,6 +42,7 @@ const buildApp = async (env = 'test') => {
     issuer: 'http://auth.example.test',
     audienceUI: 'my-ui',
     audienceAPI: 'my-api',
+    oidcApiResourceUri: "https://api.example.test",
     tokens: {
       access: 'test_access',
       refresh: 'test_refresh',
@@ -81,6 +82,7 @@ const buildApp = async (env = 'test') => {
       oidcGrant: 120,
       oidcIdToken: 600,
       oidcInteraction: 600,
+      oidcClientCredentialsToken: 300
     },
     oidcClients: [{
       client_id: 'web',
@@ -1128,7 +1130,7 @@ describe('authentication routes', () => {
       token_endpoint_auth_method: 'client_secret_basic',
       grant_types: ['authorization_code'],
       response_types: ['code'],
-      require_pkce: false,
+      pkce: false,
       client_metadata: null,
       redirect_uris: ['https://external.example.test/callback'],
     });
@@ -1167,7 +1169,7 @@ describe('authentication routes', () => {
         token_endpoint_auth_method: 'client_secret_basic',
         grant_types: ['authorization_code'],
         response_types: ['code'],
-        require_pkce: false,
+        pkce: false,
         client_metadata: null,
         redirect_uris: ['https://external.example.test/callback'],
       });
@@ -1198,7 +1200,7 @@ describe('authentication routes', () => {
       token_endpoint_auth_method: 'client_secret_basic',
       grant_types: ['authorization_code', 'refresh_token'],
       response_types: ['code'],
-      require_pkce: false,
+      pkce: false,
       client_metadata: null,
       redirect_uris: ['https://external.example.test/callback'],
     };
@@ -1213,6 +1215,7 @@ describe('authentication routes', () => {
       role: 'RESEARCHER',
       acceptedTerms: true,
       locked: false,
+      pkce: false,
       remainingSignInAttempts: 0
     } as never);
 

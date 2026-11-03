@@ -5,9 +5,7 @@ import type { CacheInterface } from '../cache.js';
 import type { Config, dbQueryResponse, OidcRow } from "../types.js";
 import { OauthClientStore } from './oauthClientStore.js';
 
-
-
-const oidcTable: string = process.env.DB_OIDC_RECORDS_TABLE || 'oidc_records';
+const oidcTable: string = process.env.DB_OIDC_RECORDS_TABLE || 'oidcRecords';
 
 /**
  * Calculates the expiration date based on the provided expiresIn value.
@@ -38,11 +36,11 @@ export class OidcDbStore implements Adapter {
   async upsert(id: string, payload: AdapterPayload, expiresIn?: number): Promise<void | undefined> {
     const response: dbQueryResponse = await queryTable(
       { ...this.config.database, logger: this.config.logger },
-      `INSERT INTO ${oidcTable} (model, id, payload, grant_id, uid, user_code, expires_at)
+      `INSERT INTO ${oidcTable} (model, id, payload, grantId, uid, userCode, expiresAt)
          VALUES (?, ?, ?, ?, ?, ?, ?)
          ON DUPLICATE KEY 
-           UPDATE payload = VALUES(payload), grant_id = VALUES(grant_id), uid = VALUES(uid),
-           user_code = VALUES(user_code), expires_at = VALUES(expires_at)`,
+           UPDATE payload = VALUES(payload), grantId = VALUES(grantId), uid = VALUES(uid),
+           userCode = VALUES(userCode), expiresAt = VALUES(expiresAt)`,
         [this.model, id, JSON.stringify(payload), payload.grantId ?? null, payload.uid ?? null,
           payload.userCode ?? null, expiry(expiresIn)],
     );
@@ -70,7 +68,7 @@ export class OidcDbStore implements Adapter {
     const response: dbQueryResponse = await queryTable(
       { ...this.config.database, logger: this.config.logger },
       `SELECT payload FROM ${oidcTable} 
-              WHERE model = ? AND id = ? AND (expires_at IS NULL OR expires_at > UTC_TIMESTAMP())`,
+              WHERE model = ? AND id = ? AND (expiresAt IS NULL OR expiresAt > UTC_TIMESTAMP())`,
       [this.model, id],
     );
     if (!Array.isArray(response.results) || !response.results[0]) {
@@ -93,7 +91,7 @@ export class OidcDbStore implements Adapter {
     const response: dbQueryResponse = await queryTable(
         { ...this.config.database, logger: this.config.logger },
         `SELECT payload FROM ${oidcTable} 
-              WHERE model = ? AND uid = ? AND (expires_at IS NULL OR expires_at > UTC_TIMESTAMP())`,
+              WHERE model = ? AND uid = ? AND (expiresAt IS NULL OR expiresAt > UTC_TIMESTAMP())`,
         [this.model, uid],
     );
     if (!Array.isArray(response.results) || !response.results[0]) {
@@ -116,7 +114,7 @@ export class OidcDbStore implements Adapter {
     const response: dbQueryResponse = await queryTable(
         { ...this.config.database, logger: this.config.logger },
         `SELECT payload FROM ${oidcTable} 
-              WHERE model = ? AND userCode = ? AND (expires_at IS NULL OR expires_at > UTC_TIMESTAMP())`,
+              WHERE model = ? AND userCode = ? AND (expiresAt IS NULL OR expiresAt > UTC_TIMESTAMP())`,
         [this.model, userCode],
     );
     if (!Array.isArray(response.results) || !response.results[0]) {
@@ -169,7 +167,7 @@ export class OidcDbStore implements Adapter {
   async revokeByGrantId(grantId: string): Promise<void> {
     const response: dbQueryResponse = await queryTable(
       { ...this.config.database, logger: this.config.logger },
-      `DELETE FROM ${oidcTable} WHERE model = ? AND grant_id = ?`,
+      `DELETE FROM ${oidcTable} WHERE model = ? AND grantId = ?`,
       [this.model, grantId]
     );
     if (!response.results || (response.results as ResultSetHeader).affectedRows === 0) {

@@ -1,5 +1,5 @@
 import type { JWK } from "jose";
-import Provider, { type Configuration, type Interaction, type KoaContextWithOIDC } from 'oidc-provider';
+import Provider, { errors, type Configuration, type Interaction, type KoaContextWithOIDC } from 'oidc-provider';
 import type { CacheInterface } from './cache.js';
 import type { Config, OAuthClient, PublicUser } from "./types.js";
 import { createAdapter } from './models/oidcStore.js';
@@ -37,7 +37,21 @@ export const createProvider = (
     features: {
       devInteractions: { enabled: false },
       clientCredentials: { enabled: true },
-      resourceIndicators: { enabled: true },
+      resourceIndicators: {
+        enabled: true,
+        defaultResource: () => config.oidcApiResourceUri,
+        getResourceServerInfo: (_ctx, resourceIndicator, client) => {
+          if (resourceIndicator !== config.oidcApiResourceUri) {
+            throw new errors.InvalidTarget('Unsupported resource indicator');
+          }
+          return {
+            audience: config.audienceAPI,
+            scope: typeof client.scope === 'string' ? client.scope : '',
+            accessTokenFormat: 'jwt',
+            jwt: { sign: { alg: 'RS256' } },
+          };
+        },
+      },
       jwtResponseModes: { enabled: true },
     },
     ttl: {
@@ -52,7 +66,10 @@ export const createProvider = (
     },
     rotateRefreshToken: true,
     renderError: (ctx, out): void => {
-      config.logger.warn({ error: out.error }, 'OIDC request rejected');
+      config.logger.warn({
+        error: out.error,
+        error_description: out.error_description,
+      }, 'OIDC request rejected');
       ctx.type = 'html';
       ctx.body = `<!doctype html>
 <html lang="en">
