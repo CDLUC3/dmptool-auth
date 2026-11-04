@@ -154,12 +154,11 @@ export const createApp = (
         // Allow requests with no origin (like mobile apps, curl, or server-to-server Next.js SSR)
         if (!origin) return callback(null, true);
 
-        const allowedOrigins = [
-          `http://${process.env.DOMAIN}`,
-          `https://${process.env.DOMAIN}`,
-        ];
+        const allowedOrigins = ['development', 'test'].includes(config.env)
+          ? ['http://localhost:3000', `http://localhost:4060`]
+          : [`http://${process.env.DOMAIN}`, `https://${process.env.DOMAIN}`];
 
-        if (allowedOrigins.includes(origin) || ['development', 'test'].includes(config.env)) {
+        if (allowedOrigins.includes(origin)) {
           // Echo back the exact requesting origin (required when credentials: true)
           return callback(null, origin);
         }
@@ -168,7 +167,7 @@ export const createApp = (
       },
       credentials: true,
       methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-      allowedHeaders: ['Content-Type', 'Authorization', 'X-CSRF-Token'],
+      allowedHeaders: ['Content-Type', 'Authorization', 'X-CSRF-Token', 'X-Requested-With'],
       exposedHeaders: ['X-CSRF-Token'],
     })
   )

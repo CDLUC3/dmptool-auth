@@ -134,8 +134,8 @@ describe('authentication routes', () => {
   it('applies CORS policies for development and production requests', async () => {
     const { app: developmentApp } = await buildApp();
     await request(developmentApp).get('/csrf')
-      .set('Origin', 'https://local.example.test')
-      .expect('Access-Control-Allow-Origin', 'https://local.example.test')
+      .set('Origin', 'http://localhost:3000')
+      .expect('Access-Control-Allow-Origin', 'http://localhost:3000')
       .expect('Access-Control-Allow-Credentials', 'true')
       .expect('Access-Control-Expose-Headers', 'X-CSRF-Token')
       .expect(200);
@@ -149,7 +149,7 @@ describe('authentication routes', () => {
         .set('Access-Control-Request-Method', 'POST')
         .expect('Access-Control-Allow-Origin', 'https://auth.example.test')
         .expect('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS')
-        .expect('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-CSRF-Token')
+        .expect('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-CSRF-Token,X-Requested-With')
         .expect(204);
 
       await request(productionApp).get('/csrf')
