@@ -1,7 +1,7 @@
 # dmptool-auth CHANGELOG
 
 ## v1.0.2
-- Added `X-Requested-For` header to support Swagger preflight checks
+- Added `X-Requested-With` header to support Swagger preflight checks
 - Added `OIDC_API_RESOURCE_URI` ENV variable to identify the Location of the REST API
 - Added a separate absolute API resource URI setting for OAuth resource indicators `OIDC_API_RESOURCE_URI`.
 - Logic to issue RS256 JWT access tokens for the configured API audience in `authorization-code` and `client-credentials` grants.
