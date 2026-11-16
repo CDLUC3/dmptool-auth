@@ -36,6 +36,7 @@ export const createProvider = (
     },
     features: {
       devInteractions: { enabled: false },
+      clientCredentials: { enabled: true },
       resourceIndicators: { enabled: true },
       jwtResponseModes: { enabled: true },
     },
@@ -47,6 +48,7 @@ export const createProvider = (
       Grant: config.ttl.oidcGrant,
       IdToken: config.ttl.oidcIdToken,
       Interaction: config.ttl.oidcInteraction,
+      ClientCredentials: config.ttl.oidcIdToken,
     },
     rotateRefreshToken: true,
     renderError: (ctx, out): void => {

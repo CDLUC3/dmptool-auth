@@ -8,7 +8,7 @@ jest.unstable_mockModule('nodemailer', () => ({
   default: { createTransport },
 }));
 
-const { initializeEmailTransporter, sendResetPasswordEmail } = await import('../email.js');
+const { initializeEmailTransporter, sendAccountLockedEmail, sendResetPasswordEmail } = await import('../email.js');
 
 const environment = { ...process.env };
 const logger = {
@@ -148,6 +148,19 @@ describe('email service', () => {
 
     await expect(sendResetPasswordEmail(config, emailer, 'alice@example.test', 'reset-token')).resolves.toBe(false);
     await expect(sendResetPasswordEmail(config, emailer, '', 'reset-token')).resolves.toBe(false);
+    expect(logger.error).toHaveBeenCalled();
+  });
+
+  it('sends account-lock emails and rejects missing recipients', async () => {
+    process.env.NODE_ENV = 'production';
+
+    await expect(sendAccountLockedEmail(config, emailer, 'alice@example.test')).resolves.toBe(true);
+    expect(sendMail).toHaveBeenCalledWith(expect.objectContaining({
+      subject: 'DMP Tool - Your account has been locked',
+      html: expect.stringContaining('too many failed login attempts'),
+    }));
+
+    await expect(sendAccountLockedEmail(config, emailer, '')).resolves.toBe(false);
     expect(logger.error).toHaveBeenCalled();
   });
 });

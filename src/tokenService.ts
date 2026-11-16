@@ -1,11 +1,16 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import type { CacheInterface } from './cache.js';
 import type { KeyStore } from './models/keyStore.js';
-import type { PublicUser, TokenClaims } from './types.js';
+import type {
+  PendingSSOSignupClaim,
+  PublicUser,
+  ShibbolethAssertion,
+  TokenClaims
+} from './types.js';
 
 // Helper functions to generate cache keys for refresh tokens and revoked access tokens
 const refreshKey = (token: string): string => `auth:refresh:${token}`;
-const revokedKey = (userId: string): string => `auth:revoked:${userId}`;
+const revokedKey = (jti: string): string => `auth:revoked:${jti}`;
 const passwordResetKey = (token: string): string => `auth:password-reset:${token}`;
 
 export interface AuthTokens {
@@ -24,7 +29,8 @@ export class TokenService {
     private readonly keyStore: KeyStore,
     private readonly accessTtlSeconds = 900,
     private readonly refreshTtlSeconds: number = 60 * 60 * 24 * 30,
-    private readonly passwordResetTtlSeconds = 60 * 60 * 2,
+    private readonly passwordResetTtlSeconds: number = 60 * 60 * 2,
+    private readonly pendingSSOTtlSeconds: number = 900,
   ) {}
 
   /**
@@ -74,23 +80,23 @@ export class TokenService {
   }
 
   /**
-   * Revoke a user's access tokens by storing their user ID in the cache with a TTL equal to the access token's TTL.
+   * Revoke an access token by storing its jti in the cache with a TTL equal to the access token's TTL.
    *
-   * @param userId the user's unique identifier
+   * @param jti the unique identifier of the access token to revoke
    * @returns A Promise that resolves when the access token has been revoked.
    */
-  async revoke(userId: string): Promise<void> {
-    await this.cache.set(revokedKey(userId), '1', this.accessTtlSeconds);
+  async revoke(jti: string): Promise<void> {
+    await this.cache.set(revokedKey(jti), '1', this.accessTtlSeconds);
   }
 
   /**
    * Determine whether an access token has been revoked.
    *
-   * @param userId the user's unique identifier
+   * @param jti the unique identifier of the access token to check
    * @returns whether the access token has been revoked
    */
-  async isRevoked(userId: string): Promise<boolean> {
-    return (await this.cache.get(revokedKey(userId))) !== undefined;
+  async isRevoked(jti: string): Promise<boolean> {
+    return (await this.cache.get(revokedKey(jti))) !== undefined;
   }
 
   /**
@@ -99,7 +105,48 @@ export class TokenService {
   async verifyAccessToken(accessToken: string): Promise<TokenClaims | undefined> {
     try {
       const claims: TokenClaims = await this.keyStore.verifyAccessToken(accessToken);
-      return await this.isRevoked(claims.id) ? undefined : claims;
+      return await this.isRevoked(claims.jti) ? undefined : claims;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Create a cryptographically secure, time-limited pending SSO sign up token.
+   */
+  async issuePendingSSOSignupToken(audience: string, payload: ShibbolethAssertion): Promise<{ signupId: string, token: string }> {
+    const signupId: string = randomUUID();
+    const token: string = await this.keyStore.issuePendingSSOSignupToken(audience, signupId, payload, this.pendingSSOTtlSeconds);
+
+    // Add the original SAML assertion to the cache so that we can use it later when the
+    // user completes the signup process
+    await this.cache.set(
+      `auth:sso-pending:${signupId}`,
+      JSON.stringify(payload),
+      this.pendingSSOTtlSeconds
+    );
+    return { signupId, token };
+  }
+
+  /**
+   * Retrieve the original SAML assertion for a pending SSO sign-up from the cache.
+   *
+   * @param signupId the unique identifier for the pending SSO sign-up
+   * @returns a Promise that resolves to the ShibbolethAssertion if found, or undefined if not found
+   */
+  async getPendingSSOSignupAssertion(signupId: string): Promise<ShibbolethAssertion | undefined> {
+    const record: string | undefined = await this.cache.get(`auth:sso-pending:${signupId}`);
+    if (!record) return undefined;
+
+    return JSON.parse(record) as ShibbolethAssertion;
+  }
+
+  /**
+   * Verify a current, pending SSO sign-up token.
+   */
+  async verifyPendingSSOSignupToken(token: string): Promise<PendingSSOSignupClaim | undefined> {
+    try {
+      return await this.keyStore.verifyPendingSSOSignupToken(token);
     } catch {
       return undefined;
     }

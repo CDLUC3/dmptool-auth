@@ -15,6 +15,13 @@ const usersTable: string = process.env.DB_USERS_TABLE || 'users';
 const userEmailsTable: string = process.env.DB_USER_EMAILS_TABLE || 'user_emails';
 const templateCollaboratorsTable: string = process.env.DB_TEMPLATE_COLLABORATORS_TABLE || 'template_collaborators';
 const projectCollaboratorsTable: string = process.env.DB_PROJECT_COLLABORATORS_TABLE || 'project_collaborators';
+const affiliationsTable: string = process.env.DB_AFFILIATIONS_TABLE || 'affiliations';
+
+// Base URI for affiliations that were manually added by users (mirrors the Apollo server)
+const DEFAULT_DMPTOOL_AFFILIATION_URL = 'https://dmptool.org/affiliations/';
+
+// The placeholder affiliationId the UI sends when the user selects "Other" and types in a name
+export const OTHER_AFFILIATION_ID = 'other';
 
 export type SignupAttempt = PublicUser & {
   signupFailed?: true;
@@ -40,10 +47,11 @@ const publicUser = (user: User): PublicUser => ({
   affiliationId: user.affiliationId,
   languageId: user.languageId,
   tokenVersion: user.tokenVersion,
-  ssoId: user.ssoId,
+  hasSSO: user.hasSSO,
   acceptedTerms: user.acceptedTerms,
   locked: user.locked,
   remainingSignInAttempts: user.remainingSignInAttempts,
+  wasJustLocked: user.wasJustLocked,
 });
 
 /**
@@ -66,9 +74,10 @@ const toUser = (
   affiliationId: row.affiliationId ?? '',
   languageId: row.languageId ?? 'en',
   tokenVersion: row.tokenVersion ?? 0,
-  ssoId: row.ssoId ?? undefined,
+  hasSSO: !!row.ssoId,
   acceptedTerms: true,
   locked: row.locked ?? false,
+  wasJustLocked: false,
   remainingSignInAttempts: row.locked
     ? 0
     : calculateRemainingSignInAttempts(row.failed_sign_in_attempts ?? 0, maxSigninAttempts) ?? 0,
@@ -158,7 +167,7 @@ export class UserStore {
   private getPepperedPassword(password: string): string {
     return crypto
         .createHmac('sha256', this.config.pepperSecret)
-        .update(password)
+        .update(password.trim())
         .digest('hex');
   }
 
@@ -175,6 +184,48 @@ export class UserStore {
   }
 
   /**
+   * Generates a random password of the requested length that meets the password validation criteria.
+   *
+   *  - Minimum length of 8 characters
+   *  - Contains at least one uppercase letter
+   *  - Contains at least one lowercase letter
+   *  - Contains at least one digit
+   *  - Contains at least one special character from the set: `!@#$%^&*_+-=?~`
+   *
+   * @private
+   * @param length - The desired password length (minimum 8 characters).
+   * @returns A randomly generated password string.
+   */
+  generateRandomPassword(length: number): string {
+    if (!Number.isInteger(length) || length < 8) {
+      throw new RangeError('Password length must be an integer of at least 8 characters');
+    }
+
+    const uppercaseCharacters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    const lowercaseCharacters = 'abcdefghijklmnopqrstuvwxyz';
+    const digitCharacters = '0123456789';
+    const specialCharacters = '!@#$%^&*_+-=?~';
+    const allCharacters = uppercaseCharacters + lowercaseCharacters + digitCharacters + specialCharacters;
+    const passwordCharacters = [
+      uppercaseCharacters[crypto.randomInt(uppercaseCharacters.length)],
+      lowercaseCharacters[crypto.randomInt(lowercaseCharacters.length)],
+      digitCharacters[crypto.randomInt(digitCharacters.length)],
+      specialCharacters[crypto.randomInt(specialCharacters.length)],
+      ...Array.from({ length: length - 4 }, () => allCharacters[crypto.randomInt(allCharacters.length)]),
+    ];
+
+    for (let index = passwordCharacters.length - 1; index > 0; index -= 1) {
+      const swapIndex = crypto.randomInt(index + 1);
+      [passwordCharacters[index], passwordCharacters[swapIndex]] = [
+        passwordCharacters[swapIndex],
+        passwordCharacters[index],
+      ];
+    }
+
+    return passwordCharacters.join('');
+  }
+
+  /**
    * Creates a new user account in the database with the provided input data.
    *
    * @param input - An object containing the user's email, password, and optional fields such as role,
@@ -183,7 +234,11 @@ export class UserStore {
    * undefined if the creation fails.
    */
   async create(
-    input: Omit<User, 'id' | 'passwordHash' | 'tokenVersion'> & { password: string },
+    input: Omit<User, 'id' | 'passwordHash' | 'tokenVersion'> & {
+      password: string;
+      claimOpenInvitations?: boolean;
+      otherAffiliationName?: string;
+    },
   ): Promise<SignupAttempt> {
     const errors: Record<string, string | undefined> = {};
 
@@ -192,6 +247,16 @@ export class UserStore {
     if (!emailPattern.test(email)) errors['email'] = 'Invalid email format';
     if (!isValidPassword(input.password)) errors['password'] = 'Invalid password format';
     if (!input.acceptedTerms) errors['acceptedTerms'] = 'Terms must be accepted';
+
+    // The "other" placeholder is not a real affiliation, so it must be accompanied by a name
+    const otherAffiliationName: string | undefined = input.otherAffiliationName?.trim() || undefined;
+    const rawAffiliationId: string | undefined = input.affiliationId?.trim();
+    const affiliationId: string | null = rawAffiliationId && rawAffiliationId.toLowerCase() !== OTHER_AFFILIATION_ID
+      ? rawAffiliationId
+      : null;
+    if (!affiliationId && rawAffiliationId?.toLowerCase() === OTHER_AFFILIATION_ID && !otherAffiliationName) {
+      errors['otherAffiliationName'] = 'Please enter the name of your institution';
+    }
     if (Object.keys(errors).length > 0) return { signupFailed: true, errors } as SignupAttempt;
 
     // Make sure the email is not already in use
@@ -204,6 +269,12 @@ export class UserStore {
       return { signupFailed: true, errors } as SignupAttempt;
     }
 
+    // If an SSO id is provided encrypt it before storing it in the database
+    let encryptedSsoId: string | null = null;
+    if (input.ssoId) {
+      encryptedSsoId = this.getPepperedPassword(input.ssoId);
+    }
+
     const response: dbQueryResponse = await queryTable(
       { ...this.config.database, logger: this.config.logger },
       `INSERT INTO ${usersTable}
@@ -214,10 +285,10 @@ export class UserStore {
         'RESEARCHER',  // New users are always created with the RESEARCHER role
         this.capitalize(input.givenName),
         this.capitalize(input.surName),
-        input.affiliationId?.trim(),
+        affiliationId,
         true,   // They wouldn't have been able to create an account without accepting the terms
         input.languageId?.trim() || 'en-US',
-        input.ssoId?.trim() ?? null,
+        encryptedSsoId,
       ],
     );
     if (!response.results || (response.results as ResultSetHeader).affectedRows === 0) {
@@ -236,9 +307,29 @@ export class UserStore {
     // Backfill the createdById and modifiedById fields for the new user
     await queryTable(
       { ...this.config.database, logger: this.config.logger },
-      `UPDATE ${usersTable} SET createdById = ?, modifiedById = ? WHERE id = ?`,
-      [userId, userId, userId],
+      `UPDATE ${usersTable} 
+      SET createdById = ?, modifiedById = ?, last_sign_in_via = ?, last_sign_in = CURRENT_TIMESTAMP
+      WHERE id = ?`,
+      [userId, userId, input.ssoId ? 'SSO' : 'PASSWORD', userId],
     );
+
+    // If the user entered an affiliation that is not in the list, find or create it and attach it.
+    // This happens after the user is inserted because affiliations.createdById is required.
+    if (!affiliationId && otherAffiliationName) {
+      const otherAffiliationId: string | undefined = await this.findOrCreateAffiliationByName(
+        otherAffiliationName,
+        userId,
+      );
+      if (otherAffiliationId) {
+        await queryTable(
+          { ...this.config.database, logger: this.config.logger },
+          `UPDATE ${usersTable} SET affiliationId = ? WHERE id = ?`,
+          [otherAffiliationId, userId],
+        );
+      } else {
+        this.config.logger.error({ otherAffiliationName, userId }, 'Unable to create the affiliation for the new user');
+      }
+    }
 
     // Add the primary email address for the new user in the userEmails table
     await queryTable(
@@ -248,9 +339,10 @@ export class UserStore {
       [userId, email, true, false, userId, userId],
     );
 
-    // Accept any open invitations to collaborate
-    await this.claimOpenTemplateCollaborations(email, userId);
-    await this.claimOpenProjectCollaborations(email, userId);
+    if (input.claimOpenInvitations !== false) {
+      await this.claimOpenTemplateCollaborations(email, userId);
+      await this.claimOpenProjectCollaborations(email, userId);
+    }
 
     const user: PublicUser | undefined = await this.findById(String(userId));
     if (!user) {
@@ -291,23 +383,36 @@ export class UserStore {
     // Compare the provided password with the stored password hash
     const passwordHash: string = this.getPepperedPassword(password);
     if (!(await bcrypt.compare(passwordHash, user.passwordHash))) {
-      const failedSignInAttempts: number = this.config.maxFailedSignInAttempts - user.remainingSignInAttempts + 1;
-      const locked: boolean = failedSignInAttempts >= this.config.maxFailedSignInAttempts;
-
-      await queryTable(
+      const lockThreshold = this.config.maxFailedSignInAttempts - 1;
+      const increment = await queryTable(
         { ...this.config.database, logger: this.config.logger },
         `UPDATE ${usersTable}
-         SET failed_sign_in_attempts = failed_sign_in_attempts + 1${locked ? ', locked = 1' : ''}
-         WHERE id = ?`,
-        [user.id],
+         SET failed_sign_in_attempts = failed_sign_in_attempts + 1
+         WHERE id = ? AND active = 1 AND locked = 0 AND failed_sign_in_attempts < ?`,
+        [user.id, lockThreshold],
       );
+      const incremented = Boolean(increment.results && !Array.isArray(increment.results)
+        && (increment.results as ResultSetHeader).affectedRows > 0);
+
+      let wasJustLocked = false;
+      if (!incremented) {
+        const lock = await queryTable(
+          { ...this.config.database, logger: this.config.logger },
+          `UPDATE ${usersTable}
+           SET failed_sign_in_attempts = failed_sign_in_attempts + 1, locked = 1
+           WHERE id = ? AND active = 1 AND locked = 0 AND failed_sign_in_attempts >= ?`,
+          [user.id, lockThreshold],
+        );
+        wasJustLocked = Boolean(lock.results && !Array.isArray(lock.results)
+          && (lock.results as ResultSetHeader).affectedRows > 0);
+      }
+
+      const currentUser = await this.findByEmail(email);
+      if (!currentUser) return { authenticationFailed: true } as AuthenticationAttempt;
+
       return {
-        ...publicUser(user),
-        locked,
-        remainingSignInAttempts: calculateRemainingSignInAttempts(
-          failedSignInAttempts,
-          this.config.maxFailedSignInAttempts,
-        ),
+        ...publicUser(currentUser),
+        wasJustLocked,
         authenticationFailed: true,
       };
     }
@@ -360,7 +465,7 @@ export class UserStore {
 
     const pepperedPassword: string = this.getPepperedPassword(currentPassword);
     const user: User | undefined = await this.findRaw(
-        `SELECT u.id, u.password, u.role, u.givenName, u.surName, u.affiliationId, u.languageId, u.ssoId, u.tokenVersion, ue.email, u.failedLoginAttempts
+        `SELECT u.id, u.password, u.role, u.givenName, u.surName, u.affiliationId, u.languageId, u.ssoId, u.tokenVersion, ue.email, u.locked, u.failed_sign_in_attempts
        FROM ${usersTable} u JOIN ${userEmailsTable} ue ON ue.userId = u.id AND ue.isPrimary = 1
        WHERE u.id = ? AND u.active = 1 AND u.locked = 0 LIMIT 1`,
         [id],
@@ -373,24 +478,37 @@ export class UserStore {
   /**
    * Logs in a user via SSO.
    *
-   * @param ssoId The SSO ID of the user to log in.
-   * @returns A Promise that resolves to the public user object if login is successful, or undefined if not.
+   * @param userId The ID of the user to log in.
    */
-  async ssoLogin(ssoId: string): Promise<PublicUser | undefined> {
-    const user: PublicUser | undefined = await this.findBySsoId(ssoId);
-    if (!user) return undefined;
+  async ssoLogin(userId: string): Promise<void> {
+    // Update the last sign-in timestamp and method for the user
+    await queryTable(
+        {...this.config.database, logger: this.config.logger},
+        `UPDATE ${usersTable} SET failed_sign_in_attempts = 0, last_sign_in = CURRENT_TIMESTAMP,
+           last_sign_in_via = ?
+         WHERE id = ?`,
+        ['SSO', userId],
+    );
+  }
 
-    // Update the last sign-in timestamp and method for the user if their account is not locked
-    if (!user.locked) {
-      await queryTable(
-          {...this.config.database, logger: this.config.logger},
-          `UPDATE ${usersTable} SET failed_sign_in_attempts = 0, last_sign_in = CURRENT_TIMESTAMP,
-             last_sign_in_via = ?
-           WHERE id = ?`,
-          ['SSO', user.id],
-      );
+  /**
+   * Associates a trusted SSO subject with an existing user account.
+   *
+   * @param userId The user to associate with the SSO subject.
+   * @param ssoId The trusted SSO subject.
+   */
+  async linkSsoId(userId: string, ssoId: string): Promise<void> {
+    // Encrypt the SSO ID before storing it in the database
+    const encryptedSsoId: string | null = this.getPepperedPassword(ssoId);
+
+    const response: dbQueryResponse = await queryTable(
+      { ...this.config.database, logger: this.config.logger },
+      `UPDATE ${usersTable} SET ssoId = ? WHERE id = ? AND active = 1 AND (ssoId IS NULL OR ssoId = '')`,
+      [encryptedSsoId, userId],
+    );
+    if (!response.results || Array.isArray(response.results) || (response.results as ResultSetHeader).affectedRows === 0) {
+      throw new Error(`Unable to link SSO identity for user ${userId}`);
     }
-    return user;
   }
 
   /**
@@ -434,23 +552,39 @@ export class UserStore {
    * @returns The user if found, otherwise undefined.
    */
   async findBySsoId(ssoId: string): Promise<PublicUser | undefined> {
-    const user: User | undefined = await this.findRaw(
-      `SELECT u.id, u.password, u.role, u.givenName, u.surName, u.affiliationId, u.languageId,
+    const encryptedSsoId: string | null = this.getPepperedPassword(ssoId);
+    const sql = `SELECT u.id, u.password, u.role, u.givenName, u.surName, u.affiliationId, u.languageId,
          u.ssoId, u.tokenVersion, ue.email, u.locked, u.failed_sign_in_attempts
        FROM ${usersTable} u JOIN ${userEmailsTable} ue ON ue.userId = u.id AND ue.isPrimary = 1 
-       WHERE u.ssoId = ? AND u.active = 1 LIMIT 1`,
-      [ssoId],
-    );
+       WHERE u.ssoId = ? AND u.active = 1 LIMIT 1`;
+
+    // First try to find the encrypted version,
+    // then try to find the user by the plain SSO ID to support legacy migrated data,
+    let user: User | undefined = await this.findRaw(sql, [encryptedSsoId]);
+    if (!user) {
+      user = await this.findRaw(sql, [ssoId]);
+
+      // If we did find the unencrypted version, encrypt it for the future
+      if (user) {
+        await queryTable(
+          { ...this.config.database, logger: this.config.logger },
+          `UPDATE ${usersTable} SET ssoId = ? WHERE id = ? AND active = 1`,
+          [encryptedSsoId, user.id],
+        );
+      }
+    }
     return user ? publicUser(user) : undefined;
   }
 
   /**
-   * Finds the SSO entity ID associated with the email domain of the provided email address.
+   * Finds the affiliation associated with the email domain of the provided email address.
    *
-   * @param email The email address to check for an associated SSO entity ID.
-   * @returns A Promise that resolves to the SSO entity ID if found, otherwise undefined.
+   * @param email The email address to check for an associated affiliation.
+   * @returns A Promise that resolves to the affiliation and display name if found, otherwise undefined.
    */
-  async findSsoEntityId(email: string): Promise<string | undefined> {
+  async findAffiliationByEmail(
+    email: string,
+  ): Promise<SsoEntityRow | undefined> {
     if (!emailPattern.test(email)) return undefined;
 
     const emailParts: string[] = email.trim().split('@');
@@ -461,15 +595,126 @@ export class UserStore {
 
     const ssoEntityRows : dbQueryResponse = await queryTable(
       { ...this.config.database, logger: this.config.logger },
-      `SELECT aed.affiliationId, a.ssoEntityId
+      `SELECT aed.affiliationId, a.displayName, a.ssoEntityId
        FROM affiliationEmailDomains AS aed JOIN affiliations AS a ON aed.affiliationId = a.uri
-       WHERE a.ssoEntityId IS NOT NULL AND TRIM(a.ssoEntityId) != '' AND aed.emailDomain = ? LIMIT 1;`,
+       WHERE TRIM(a.ssoEntityId) != '' AND aed.emailDomain = ? AND a.active = 1 LIMIT 1;`,
       [domain],
     );
     if (!ssoEntityRows.results || !Array.isArray(ssoEntityRows.results)) return undefined;
 
     const ssoEntityRow = ssoEntityRows.results[0] as SsoEntityRow | undefined;
-    return ssoEntityRow ? ssoEntityRow.ssoEntityId : undefined;
+    return ssoEntityRow || undefined;
+  }
+
+  /**
+   * Finds an affiliation by its name or display name (case-insensitive), creating a new DMPTool-managed
+   * affiliation if none exists. Mirrors processOtherAffiliationName in the Apollo server.
+   *
+   * @param name The name of the affiliation entered by the user.
+   * @param userId The id of the user creating the affiliation (used for createdById/modifiedById).
+   * @returns A Promise that resolves to the affiliation URI, or undefined if it could not be created.
+   */
+  async findOrCreateAffiliationByName(
+    name: string,
+    userId: number,
+  ): Promise<string | undefined> {
+    const displayName: string = name.trim();
+    if (!displayName) return undefined;
+
+    const dbConfig = { ...this.config.database, logger: this.config.logger };
+    const findByName = async (): Promise<string | undefined> => {
+      const existing: dbQueryResponse = await queryTable(
+        dbConfig,
+        `SELECT uri FROM ${affiliationsTable}
+         WHERE TRIM(LOWER(name)) = ? OR TRIM(LOWER(displayName)) = ? LIMIT 1`,
+        [displayName.toLowerCase(), displayName.toLowerCase()],
+      );
+      const row = Array.isArray(existing.results)
+        ? existing.results[0] as { uri?: string } | undefined
+        : undefined;
+      return row?.uri || undefined;
+    };
+
+    const existingUri: string | undefined = await findByName();
+    if (existingUri) return existingUri;
+
+    // Build the abbreviation the same way the Apollo server does
+    const words: string[] = displayName.split(' ').filter((word) => word.length > 0);
+    const displayAbbreviation: string = words.length > 1
+      ? words.slice(0, 4).map((word) => word[0].toUpperCase()).join('')
+      : displayName.replace(' ', '').slice(0, 4).toUpperCase();
+
+    const uri = `${DEFAULT_DMPTOOL_AFFILIATION_URL}${crypto.randomBytes(3).toString('hex')}`;
+    try {
+      const response: dbQueryResponse = await queryTable(
+        dbConfig,
+        `INSERT INTO ${affiliationsTable}
+          (uri, provenance, name, displayName, displayAbbreviation, searchName, types, acronyms, aliases,
+           feedbackEmails, managed, active, createdById, modifiedById)
+         VALUES (?, 'DMPTOOL', ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?, ?)`,
+        [
+          uri,
+          displayName,
+          displayName,
+          displayAbbreviation,
+          [displayName, displayAbbreviation].join(' | ').substring(0, 249),
+          JSON.stringify(['OTHER']),
+          JSON.stringify([]),
+          JSON.stringify([]),
+          JSON.stringify([]),
+          userId,
+          userId,
+        ],
+      );
+      if (response.results && (response.results as ResultSetHeader).affectedRows > 0) return uri;
+    } catch (error) {
+      // Most likely a race where another signup created the same displayName (it has a unique index)
+      this.config.logger.error({ error, displayName }, 'Unable to insert new affiliation');
+    }
+
+    return await findByName();
+  }
+
+  /**
+   * Finds the SSO information for the affiliation associated with the uri.
+   *
+   * @param uri The the affiliation URI to check for an associated SSO entity ID.
+   * @returns A Promise that resolves to the SSO entity ID and display name if found, otherwise undefined.
+   */
+  async findSsoEntityIdByURI(
+    uri: string,
+  ): Promise<SsoEntityRow | undefined> {
+    const ssoEntityRows : dbQueryResponse = await queryTable(
+        { ...this.config.database, logger: this.config.logger },
+        `SELECT a.uri as affiliationId, a.displayName, a.ssoEntityId
+      FROM affiliations AS a WHERE a.uri = ? LIMIT 1;`,
+        [uri],
+    );
+    if (!ssoEntityRows.results || !Array.isArray(ssoEntityRows.results)) return undefined;
+
+    const ssoEntityRow = ssoEntityRows.results[0] as SsoEntityRow | undefined;
+    return ssoEntityRow || undefined;
+  }
+
+  /**
+   * Finds the SSO information for the Affiliation associated with the entityId.
+   *
+   * @param entityId The SSO entity ID to check for an associated Affiliation.
+   * @returns A Promise that resolves to the SSO entity ID and display name if found, otherwise undefined.
+   */
+  async findSsoEntityIdById(
+      entityId: string,
+  ): Promise<SsoEntityRow | undefined> {
+    const ssoEntityRows : dbQueryResponse = await queryTable(
+      { ...this.config.database, logger: this.config.logger },
+      `SELECT a.uri as affiliationId, a.displayName, a.ssoEntityId
+      FROM affiliations AS a WHERE a.ssoEntityId = ? LIMIT 1;`,
+      [entityId],
+    );
+    if (!ssoEntityRows.results || !Array.isArray(ssoEntityRows.results)) return undefined;
+
+    const ssoEntityRow = ssoEntityRows.results[0] as SsoEntityRow | undefined;
+    return ssoEntityRow || undefined;
   }
 
   /**

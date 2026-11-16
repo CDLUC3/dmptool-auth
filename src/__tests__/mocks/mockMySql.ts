@@ -127,9 +127,14 @@ export class MockMySqlStore {
       user.tokenVersion += 1;
       return result(1);
     }
-    if (sql.startsWith('UPDATE users SET failed_sign_in_attempts = failed_sign_in_attempts + 1')) {
+    if (sql.includes('SET failed_sign_in_attempts = failed_sign_in_attempts + 1')) {
       const user = this.users.get(Number(values[0]));
       if (!user || !user.active || user.locked) return result(0);
+      const threshold = Number(values[1]);
+      if (
+        (sql.includes('failed_sign_in_attempts <') && user.failed_sign_in_attempts >= threshold)
+        || (sql.includes('failed_sign_in_attempts >=') && user.failed_sign_in_attempts < threshold)
+      ) return result(0);
       user.failed_sign_in_attempts += 1;
       if (sql.includes('locked = 1')) user.locked = 1;
       return result(1);

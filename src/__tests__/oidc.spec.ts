@@ -54,6 +54,7 @@ describe('OIDC provider configuration', () => {
 
     const configuration = Provider.mock.calls[0]?.[1] as {
       jwks: { keys: Array<{ kid: string }> };
+      features: { clientCredentials: { enabled: boolean } };
       findAccount: (_context: unknown, accountId: string) => Promise<{
         accountId: string;
         claims: () => Record<string, unknown>;
@@ -62,6 +63,7 @@ describe('OIDC provider configuration', () => {
     expect(Provider).toHaveBeenCalledWith(config.issuer, expect.any(Object));
     expect(createAdapter).toHaveBeenCalledWith(config, expect.anything());
     expect(configuration.jwks.keys).toEqual([{ kty: 'RSA', kid: 'private', d: 'private-material' }]);
+    expect(configuration.features.clientCredentials.enabled).toBe(true);
 
     const account = await configuration.findAccount({}, user.id);
     expect(account?.accountId).toBe(user.id);

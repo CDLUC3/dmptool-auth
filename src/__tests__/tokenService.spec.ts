@@ -122,9 +122,9 @@ describe('TokenService', () => {
     expect((await jwtVerify(tokens.accessToken, await import('jose').then(({ importJWK }) => importJWK(keys.publicJwks().keys[0]!, 'RS256')))).protectedHeader.alg).toBe('RS256');
     await expect(service.consumeRefreshToken(tokens.refreshToken)).resolves.toMatchObject({ userId: user!.id });
     await expect(service.consumeRefreshToken(tokens.refreshToken)).resolves.toBeUndefined();
-    await expect(service.isRevoked(claims.id as string)).resolves.toBe(false);
-    await service.revoke(claims.id as string);
-    await expect(service.isRevoked(claims.id as string)).resolves.toBe(true);
+    await expect(service.isRevoked(claims.jti as string)).resolves.toBe(false);
+    await service.revoke(claims.jti as string);
+    await expect(service.isRevoked(claims.jti as string)).resolves.toBe(true);
   });
 
   it('uses the configured password reset TTL and lets expired reset tokens disappear naturally', async () => {
@@ -188,11 +188,12 @@ describe('TokenService', () => {
       jti: expect.any(String),
     });
 
-    const { id } = decodeJwt(accessToken) as { id: string };
-    await service.revoke(id);
+    const { jti } = decodeJwt(accessToken) as { jti: string };
+    await service.revoke(jti);
 
     await expect(service.verifyAccessToken(accessToken)).resolves.toBeUndefined();
-    await expect(service.verifyAccessToken(secondAccessToken)).resolves.toBeUndefined();
+    // Revoking one token must not affect other tokens issued to the same user
+    await expect(service.verifyAccessToken(secondAccessToken)).resolves.toMatchObject({ id: user.id });
     await expect(service.verifyAccessToken('not-a-token')).resolves.toBeUndefined();
   });
 

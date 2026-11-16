@@ -169,5 +169,149 @@ describe('KeyStore', () => {
       jti: 'jti-1',
       tokenVersion: 0,
     })).rejects.toThrow('Invalid audience for access token');
+
+    await expect(store.issueAccessToken('', {
+      id: 'user-1',
+      email: 'user@example.test',
+      givenName: 'User',
+      surName: 'Example',
+      role: 'RESEARCHER',
+      affiliationId: 'affiliation-1',
+      languageId: 'en',
+      jti: 'jti-1',
+      tokenVersion: 0,
+    })).rejects.toThrow('Audience is required to issue an access token');
+  });
+
+  it('issues and verifies pending SSO sign-up tokens', async () => {
+    queryTable
+      .mockResolvedValueOnce({ results: [], fields: [] })
+      .mockResolvedValueOnce({ results: { affectedRows: 1 }, fields: [] });
+    const store = await KeyStore.load(config as never);
+    const claim = {
+      signupId: 'signup-1',
+      email: 'user@example.test',
+      givenName: 'User',
+      surName: 'Example',
+      displayName: 'Example University',
+      affiliation: 'affiliation-1',
+    };
+
+    const token = await store.issuePendingSSOSignupToken('https://app.example.test', 'signup-1', claim, 60);
+
+    await expect(store.verifyPendingSSOSignupToken(token)).resolves.toEqual({
+      signupId: 'signup-1',
+      email: 'user@example.test',
+      givenName: 'User',
+      surName: 'Example',
+      affiliation: 'Example University',
+      affiliationId: 'affiliation-1',
+    });
+    await expect(store.issuePendingSSOSignupToken('', 'signup-1', claim)).rejects.toThrow(
+      'Audience is required to issue an access token',
+    );
+    await expect(store.issuePendingSSOSignupToken('https://other.example.test', 'signup-1', claim)).rejects.toThrow(
+      'Invalid audience for access token',
+    );
+  });
+
+  it('rejects tokens with incomplete claims', async () => {
+    queryTable
+      .mockResolvedValueOnce({ results: [], fields: [] })
+      .mockResolvedValueOnce({ results: { affectedRows: 1 }, fields: [] });
+    const store = await KeyStore.load(config as never);
+
+    const accessToken = await store.issueAccessToken('https://app.example.test', {
+      id: 'user-1',
+      email: undefined,
+      givenName: 'User',
+      surName: 'Example',
+      role: 'RESEARCHER',
+      affiliationId: 'affiliation-1',
+      languageId: 'en',
+      jti: 'jti-1',
+      tokenVersion: 0,
+    } as never);
+    const signupToken = await store.issuePendingSSOSignupToken('https://app.example.test', 'signup-1', {
+      email: 12345 as never,
+      displayName: 'Example University',
+      affiliation: 'affiliation-1',
+    });
+
+    await expect(store.verifyAccessToken(accessToken)).rejects.toThrow('Invalid access token claims');
+    await expect(store.verifyPendingSSOSignupToken(signupToken)).rejects.toThrow(
+      'Invalid pending SSO sign-up token claims',
+    );
+  });
+
+  it('rotates keys with missing metadata and discards expired retired keys', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+    queryTable
+      .mockResolvedValueOnce({ results: [], fields: [] })
+      .mockResolvedValueOnce({ results: { affectedRows: 1 }, fields: [] });
+    const store = await KeyStore.load(config as never);
+    const persisted = JSON.parse(queryTable.mock.calls[1]![2]![1] as string);
+    delete persisted.createdAt;
+    delete persisted.retired;
+    persisted.retired = [{
+      key: store.publicJwks().keys[0],
+      expiresAt: '2025-12-31T23:59:59.000Z',
+    }];
+
+    queryTable
+      .mockResolvedValueOnce({ results: [{ jwks: persisted }], fields: [] })
+      .mockResolvedValueOnce({ results: { affectedRows: 1 }, fields: [] });
+    const rotated = await KeyStore.load(config as never);
+    const updated = JSON.parse(queryTable.mock.calls[3]![2]![0] as string);
+
+    expect(rotated.publicJwks().keys).toHaveLength(2);
+    expect(updated.retired).toHaveLength(1);
+    jest.useRealTimers();
+  });
+
+  it('rotates keys with an invalid creation timestamp', async () => {
+    queryTable
+      .mockResolvedValueOnce({ results: [], fields: [] })
+      .mockResolvedValueOnce({ results: { affectedRows: 1 }, fields: [] });
+    await KeyStore.load(config as never);
+    const persisted = JSON.parse(queryTable.mock.calls[1]![2]![1] as string);
+    persisted.createdAt = 'invalid';
+    delete persisted.retired;
+
+    queryTable
+      .mockResolvedValueOnce({ results: [{ jwks: persisted }], fields: [] })
+      .mockResolvedValueOnce({ results: { affectedRows: 1 }, fields: [] });
+
+    await KeyStore.load(config as never);
+
+    expect(queryTable).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.stringContaining('UPDATE auth_keys'),
+      [expect.any(String), 'auth:oidc:jwks'],
+    );
+  });
+
+  it('rejects verification when the public key is unavailable', async () => {
+    queryTable
+      .mockResolvedValueOnce({ results: [], fields: [] })
+      .mockResolvedValueOnce({ results: { affectedRows: 1 }, fields: [] });
+    const store = await KeyStore.load(config as never);
+    const token = await store.issueAccessToken('https://app.example.test', {
+      id: 'user-1',
+      email: 'user@example.test',
+      givenName: 'User',
+      surName: 'Example',
+      role: 'RESEARCHER',
+      affiliationId: 'affiliation-1',
+      languageId: 'en',
+      jti: 'jti-1',
+      tokenVersion: 0,
+    });
+    store.jwks.keys.splice(0);
+    delete store.jwks.retired;
+
+    expect(store.publicJwks().keys).toEqual([]);
+    await expect(store.verifyAccessToken(token)).rejects.toThrow('No public signing key is available');
   });
 });
