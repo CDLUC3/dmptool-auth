@@ -76,7 +76,7 @@ describe('loadConfig', () => {
       keepAlive: 60_000,
     });
     expect(config.ttl.passwordReset).toBe(7_200);
-    expect(config.ttl.emailConfirmation).toBe(86_400);
+    expect(config.ttl.emailConfirmation).toBe(43_200);
     expect(config.tokens).toMatchObject({
       validAudiences: ['my-ui', 'my-api'],
     });

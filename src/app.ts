@@ -73,13 +73,18 @@ export const safeReturnTo = (value: unknown): string | undefined => {
   if (typeof value !== 'string' || value.length > 2048) return undefined;
   // Must start with a single "/". "//host" and "/\\host" are read by browsers as links to another site
   if (!value.startsWith('/') || value.startsWith('//') || value.includes('\\')) return undefined;
-  // eslint-disable-next-line no-control-regex - rejects any "returnTo" value containing a control character, which could be used to inject headers or other malicious content
+  // Rejects any "returnTo" value containing a control character, which could be used to inject headers or other
+  // malicious content
+  // eslint-disable-next-line no-control-regex
   if (/[\u0000-\u001f\u007f]/.test(value)) return undefined;
   // A placeholder path so that we can parse the path with "new URL()" and check that the origin is the same as the placeholder
   const base = 'http://return-to.invalid';
   const parsed = new URL(value, base);
   // parsed.search is the query string. parsed.hash is the fragment #.
-  return parsed.origin === base ? `${parsed.pathname}${parsed.search}${parsed.hash}` : undefined;
+  const path = `${parsed.pathname}${parsed.search}${parsed.hash}`;
+  // Check the parsed path too: dot segments can collapse it into "//host" (e.g. "/..//evil.com" becomes
+  // "//evil.com"), which browsers read as a link to another site
+  return parsed.origin === base && !path.startsWith('//') ? path : undefined;
 };
 
 /**

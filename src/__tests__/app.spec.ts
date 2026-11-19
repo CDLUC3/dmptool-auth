@@ -1,7 +1,8 @@
 import request from 'supertest';
 import { decodeJwt } from 'jose';
-import { afterEach, beforeAll, beforeEach, describe, expect, it, jest } from '@jest/globals';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import crypto from 'node:crypto';
+import http from 'node:http';
 import type { Config, OAuthClient } from '../types.js';
 import type { CacheInterface } from '../cache.js';
 import type { Mail, SMTPSentMessageInfo } from 'nodemailer';
@@ -27,6 +28,28 @@ const shibbolethProxyHeaders = { 'x-shib-proxy-secret': 'test-shibboleth-secret'
 const mockLogger = { debug: jest.fn(), error: jest.fn(), info: jest.fn(), warn: jest.fn() } as unknown as Logger;
 const sendMail = jest.fn<(message: { html?: string }) => Promise<{ messageId: string }>>();
 const emailer = { sendMail } as unknown as Mail<SMTPSentMessageInfo>;
+
+// Supertest normally starts each app with `listen(0)` on every interface and then sends requests to 127.0.0.1.
+// On macOS that port can already be held on 127.0.0.1 by another app (e.g. VS Code), so the request reaches that
+// app instead and the test randomly gets its 404. Listening on 127.0.0.1 ourselves means the OS only hands out a
+// port that is free there. Supertest uses a server that is already listening as-is.
+const servers: http.Server[] = [];
+const listenOnLoopback = async (handler: http.RequestListener): Promise<http.Server> => {
+  const server = http.createServer(handler);
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  servers.push(server);
+  return server;
+};
+
+afterAll(async () => {
+  await Promise.all(servers.map((server) => new Promise<void>((resolve) => {
+    server.closeAllConnections();
+    server.close(() => resolve());
+  })));
+});
 
 const buildApp = async (env = 'test') => {
   const config: Config = {
@@ -112,7 +135,7 @@ const buildApp = async (env = 'test') => {
     config.ttl.emailConfirmation,
   );
   return {
-    app: createApp({
+    app: await listenOnLoopback(createApp({
       config,
       cache,
       emailer,
@@ -120,7 +143,7 @@ const buildApp = async (env = 'test') => {
       provider,
       tokens,
       keys,
-    }),
+    })),
     cache,
     users,
     provider,
@@ -685,6 +708,17 @@ describe('authentication routes', () => {
       .set('x-shib-session-id', 'sso-session')
       .expect(302);
     expect(callback.headers.location).toBe('/');
+
+    // "/..//evil.example" starts with a single "/", but resolves to "//evil.example", which browsers read as another site
+    const dotSegments = await request(app).get('/sso/callback')
+      .query({ returnTo: '/..//evil.example/path' })
+      .set(shibbolethProxyHeaders)
+      .set('x-shib-eppn', 'alice@example.test')
+      .set('x-shib-mail', 'alice@example.test')
+      .set('x-shib-identity-provider', 'https://idp.example.test')
+      .set('x-shib-session-id', 'sso-session')
+      .expect(302);
+    expect(dotSegments.headers.location).toBe('/');
   });
 
   it('rejects an invalid Shibboleth callback payload', async () => {
@@ -1818,6 +1852,16 @@ describe('safeReturnTo', () => {
     expect(safeReturnTo('/email/confirm-email/abc')).toBe('/email/confirm-email/abc');
     expect(safeReturnTo('/plans?page=2#top')).toBe('/plans?page=2#top');
     expect(safeReturnTo('/a/../b')).toBe('/b');
+    // A double slash after the start of the path stays on this site
+    expect(safeReturnTo('/a//b')).toBe('/a//b');
+  });
+
+  it('rejects dot segments that would collapse the path into a link to another site', () => {
+    for (const value of [
+      '/..//evil.example', '/.//evil.example', '/%2e%2e//evil.example', '/%2e//evil.example', '/a/..//evil.example',
+    ]) {
+      expect(safeReturnTo(value)).toBeUndefined();
+    }
   });
 
   it('rejects values that are missing, too long or not a path on this site', () => {
