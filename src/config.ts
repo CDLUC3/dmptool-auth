@@ -16,7 +16,7 @@ import type { Config, OAuthClient, SesConnectionParams } from "./types.js";
  * @returns The SSM connection parameters
  */
 const getSSMConfig = async (
-    logger: Logger,
+  logger: Logger,
 ): Promise<SsmConnectionParams | undefined> => {
   // If running locally, the SSM_ENDPOINT variable will be set
   return {
@@ -28,8 +28,8 @@ const getSSMConfig = async (
 }
 
 const getSESConfig = async (
-    ssmConfig: SsmConnectionParams,
-    env: EnvironmentEnum = EnvironmentEnum.DEV
+  ssmConfig: SsmConnectionParams,
+  env: EnvironmentEnum = EnvironmentEnum.DEV
 ): Promise<SesConnectionParams | undefined> => {
   const inDevMode: boolean = ['development', 'test'].includes(process.env.NODE_ENV || 'development');
   const sesAccessKey: string | undefined = inDevMode ? 'DUMMY_KEY' : await getSSMParameter(ssmConfig, 'SesAccessKeyId', env);
@@ -61,8 +61,8 @@ const getSESConfig = async (
  * @returns the RDS connection parameters
  */
 const getMySQLConfig = async (
-    ssmConfig: SsmConnectionParams,
-    env: EnvironmentEnum = EnvironmentEnum.DEV
+  ssmConfig: SsmConnectionParams,
+  env: EnvironmentEnum = EnvironmentEnum.DEV
 ): Promise<ConnectionParams | undefined> => {
   const rdsUser: string | undefined = await getSSMParameter(ssmConfig, 'RdsUsername', env);
   const rdsPassword: string | undefined = await getSSMParameter(ssmConfig, 'RdsPassword', env);
@@ -140,8 +140,8 @@ export const loadConfig = async (logger: Logger): Promise<Config> => {
   }
 
   const env: EnvironmentEnum = process.env.DEPLOYMENT_ENV
-      ? EnvironmentEnum[process.env.DEPLOYMENT_ENV as keyof typeof EnvironmentEnum]
-      : EnvironmentEnum.DEV;
+    ? EnvironmentEnum[process.env.DEPLOYMENT_ENV as keyof typeof EnvironmentEnum]
+    : EnvironmentEnum.DEV;
 
   const ssmConfig: SsmConnectionParams | undefined = await getSSMConfig(logger);
   if (!ssmConfig) {
@@ -184,8 +184,8 @@ export const loadConfig = async (logger: Logger): Promise<Config> => {
     doNotReplyAddress: process.env.DO_NOT_REPLY_ADDRESS ?? 'no-reply@example.com',
 
     maxFailedSignInAttempts: process.env.MAX_FAILED_SIGNIN_ATTEMPTS ?
-        Number.parseInt(process.env.MAX_FAILED_SIGNIN_ATTEMPTS, 10)
-        : 5,
+      Number.parseInt(process.env.MAX_FAILED_SIGNIN_ATTEMPTS, 10)
+      : 5,
 
     database: mysqlConfig,
     cache: cacheConfig,
@@ -213,6 +213,7 @@ export const loadConfig = async (logger: Logger): Promise<Config> => {
     ttl: {
       csrf: Number.parseInt(process.env.CSRF_TTL ?? '3600', 10),
       passwordReset: Number.parseInt(process.env.PASSWORD_RESET_TOKEN_TTL ?? '7200', 10),
+      emailConfirmation: Number.parseInt(process.env.EMAIL_CONFIRMATION_TOKEN_TTL ?? '43200', 10),
 
       uiAccess: Number.parseInt(process.env.UI_ACCESS_TOKEN_TTL ?? '900', 10),
       uiRefresh: Number.parseInt(process.env.UI_REFRESH_TOKEN_TTL ?? '604800', 10),

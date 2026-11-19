@@ -54,6 +54,7 @@ const app: Express = createApp({
     config.ttl.uiRefresh,
     config.ttl.passwordReset,
     config.ttl.uiPendingSSOSignup,
+    config.ttl.emailConfirmation,
   ),
   keys,
   provider

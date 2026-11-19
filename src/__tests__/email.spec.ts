@@ -8,7 +8,12 @@ jest.unstable_mockModule('nodemailer', () => ({
   default: { createTransport },
 }));
 
-const { initializeEmailTransporter, sendAccountLockedEmail, sendResetPasswordEmail } = await import('../email.js');
+const {
+  initializeEmailTransporter,
+  sendAccountLockedEmail,
+  sendEmailConfirmationEmail,
+  sendResetPasswordEmail,
+} = await import('../email.js');
 
 const environment = { ...process.env };
 const logger = {
@@ -54,6 +59,7 @@ const config: Config = {
   ttl: {
     csrf: 3600,
     passwordReset: 7200,
+    emailConfirmation: 86400,
     uiAccess: 900,
     uiRefresh: 604800,
     oidcCode: 120,
@@ -99,6 +105,70 @@ describe('email service', () => {
       secure: true,
       requireTLS: false,
     }));
+  });
+
+  it('sends an email confirmation email with the confirmation link', async () => {
+    process.env.NODE_ENV = 'production';
+
+    await expect(sendEmailConfirmationEmail(config, emailer, '42', 'alias@example.test', 'abc_123-XYZ'))
+      .resolves.toBe(true);
+
+    expect(sendMail).toHaveBeenCalledWith(expect.objectContaining({
+      to: 'alias@example.test',
+      subject: 'DMP Tool - Please confirm your email address',
+      html: expect.stringContaining('href="https://app.example.test/email/confirm-email/abc_123-XYZ"'),
+    }));
+    const html = sendMail.mock.calls[0]?.[0]?.html ?? '';
+    expect(html).toContain('This link expires in 24 hours and can only be used once.');
+    expect(html).toContain('To confirm that this is your email address, open the link below.</p>');
+    // An unconfirmed alias can't be used to sign in yet, so the email says which address to sign in with
+    expect(html).toContain("If you're asked to sign in, use the email address you normally sign in with, not this one.");
+  });
+
+  it('escapes the email address and token in the email confirmation email', async () => {
+    process.env.NODE_ENV = 'production';
+
+    await sendEmailConfirmationEmail(
+      { ...config, ttl: { ...config.ttl, emailConfirmation: 3600 } },
+      emailer,
+      '42',
+      '"<b>x</b>"@example.test',
+      'a/b?c',
+    );
+
+    const html = sendMail.mock.calls[0]?.[0]?.html ?? '';
+    expect(html).toContain('&quot;&lt;b&gt;x&lt;/b&gt;&quot;@example.test');
+    expect(html).not.toContain('<b>x</b>');
+    expect(html).toContain('/email/confirm-email/a%2Fb%3Fc');
+    expect(html).toContain('This link expires in 1 hour and can only be used once.');
+  });
+
+  it('adds a protocol to the confirmation link only when DOMAIN does not include one', async () => {
+    process.env.NODE_ENV = 'production';
+    await sendEmailConfirmationEmail({ ...config, domain: 'http://localhost:3000/' }, emailer, '42', 'a@example.test', 't');
+    await sendEmailConfirmationEmail({ ...config, domain: 'app.example.test' }, emailer, '42', 'a@example.test', 't');
+
+    expect(sendMail.mock.calls[0]?.[0]?.html).toContain('href="http://localhost:3000/email/confirm-email/t"');
+    expect(sendMail.mock.calls[1]?.[0]?.html).toContain('href="https://app.example.test/email/confirm-email/t"');
+  });
+
+  it('uses an http confirmation link and logs the email instead of sending it in development', async () => {
+    process.env.NODE_ENV = 'development';
+
+    await expect(sendEmailConfirmationEmail({ ...config, domain: 'app.example.test' }, emailer, '42', 'alias@example.test', 'token'))
+      .resolves.toBe(true);
+
+    expect(sendMail).not.toHaveBeenCalled();
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('href="http://app.example.test/email/confirm-email/token"') }),
+      expect.stringContaining("Logging email notification of type 'EmailConfirmation'"),
+    );
+  });
+
+  it('does not send an email confirmation email without an email address', async () => {
+    await expect(sendEmailConfirmationEmail(config, emailer, '42', '', 'token')).resolves.toBe(false);
+    expect(sendMail).not.toHaveBeenCalled();
+    expect(logger.error).toHaveBeenCalledWith({ userId: '42' }, expect.stringContaining('No email address'));
   });
 
   it('sends a reset email with the tokenized reset link outside development', async () => {

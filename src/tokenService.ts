@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { CacheInterface } from './cache.js';
 import type { KeyStore } from './models/keyStore.js';
 import type {
@@ -12,6 +12,21 @@ import type {
 const refreshKey = (token: string): string => `auth:refresh:${token}`;
 const revokedKey = (jti: string): string => `auth:revoked:${jti}`;
 const passwordResetKey = (token: string): string => `auth:password-reset:${token}`;
+
+// Email confirmation tokens are stored by their SHA-256 hash so that a copy of the cache does not contain
+// usable confirmation links. The owner key lets us replace an older link when a new one is requested.
+const sha256 = (value: string): string => createHash('sha256').update(value).digest('hex');
+const emailConfirmationKey = (tokenHash: string): string => `auth:email-confirmation:${tokenHash}`;
+const emailConfirmationOwnerKey = (userId: string, email: string): string =>
+  `auth:email-confirmation-owner:${sha256(`${userId}:${email.trim().toLowerCase()}`)}`;
+
+/**
+ * The user and email address that an email confirmation token was issued for.
+ */
+export interface EmailConfirmationClaim {
+  userId: string;
+  email: string;
+}
 
 export interface AuthTokens {
   accessToken: string;
@@ -31,6 +46,7 @@ export class TokenService {
     private readonly refreshTtlSeconds: number = 60 * 60 * 24 * 30,
     private readonly passwordResetTtlSeconds: number = 60 * 60 * 2,
     private readonly pendingSSOTtlSeconds: number = 900,
+    private readonly emailConfirmationTtlSeconds: number = 60 * 60 * 24,
   ) {}
 
   /**
@@ -173,5 +189,64 @@ export class TokenService {
    */
   async deletePasswordResetToken(token: string): Promise<void> {
     await this.cache.del([passwordResetKey(token)]);
+  }
+
+  /**
+   * Create a cryptographically secure, time-limited, single-use token that confirms the user owns the email
+   * address. Any earlier token for the same user and email stops working, so only the newest link is valid.
+   *
+   * @param userId the ID of the user who added the email address
+   * @param email the email address to confirm
+   * @returns the token to include in the confirmation link
+   */
+  async issueEmailConfirmationToken(userId: string, email: string): Promise<string> {
+    const ownerKey: string = emailConfirmationOwnerKey(userId, email);
+    const previousHash: string | undefined = await this.cache.consume(ownerKey);
+    if (previousHash) {
+      await this.cache.del([emailConfirmationKey(previousHash)]);
+    }
+
+    const token: string = randomBytes(32).toString('base64url');
+    const tokenHash: string = sha256(token);
+    const claim: EmailConfirmationClaim = { userId, email };
+    await this.cache.set(emailConfirmationKey(tokenHash), JSON.stringify(claim), this.emailConfirmationTtlSeconds);
+    await this.cache.set(ownerKey, tokenHash, this.emailConfirmationTtlSeconds);
+    return token;
+  }
+
+  /**
+   * Return the user and email for a still-valid email confirmation token without using it up.
+   *
+   * @param token the token from the confirmation link
+   * @returns the claim, or undefined if the token is unknown or has expired
+   */
+  async emailConfirmationClaim(token: string): Promise<EmailConfirmationClaim | undefined> {
+    const record: string | undefined = await this.cache.get(emailConfirmationKey(sha256(token)));
+    return record ? JSON.parse(record) as EmailConfirmationClaim : undefined;
+  }
+
+  /**
+   * Use up an email confirmation token. The read and delete happen in one step, so a token can only be
+   * used once even if two requests arrive at the same time.
+   *
+   * @param token the token from the confirmation link
+   * @returns the claim, or undefined if the token is unknown, expired or already used
+   */
+  async consumeEmailConfirmationToken(token: string): Promise<EmailConfirmationClaim | undefined> {
+    const record: string | undefined = await this.cache.consume(emailConfirmationKey(sha256(token)));
+    if (!record) return undefined;
+
+    const claim = JSON.parse(record) as EmailConfirmationClaim;
+    await this.cache.del([emailConfirmationOwnerKey(claim.userId, claim.email)]);
+    return claim;
+  }
+
+  /**
+   * Remove an email confirmation token, e.g. when the confirmation email could not be sent.
+   *
+   * @param token the token to remove
+   */
+  async deleteEmailConfirmationToken(token: string): Promise<void> {
+    await this.consumeEmailConfirmationToken(token);
   }
 }

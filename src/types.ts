@@ -44,6 +44,7 @@ export interface Config {
   ttl: {
     csrf: number;
     passwordReset: number;
+    emailConfirmation: number;
 
     uiAccess: number;
     uiRefresh: number;

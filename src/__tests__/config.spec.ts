@@ -38,6 +38,7 @@ describe('loadConfig', () => {
     process.env.CACHE_PORT = '6380';
     process.env.OIDC_CLIENTS_JSON = '[]';
     process.env.PASSWORD_RESET_TOKEN_TTL = '123';
+    process.env.EMAIL_CONFIRMATION_TOKEN_TTL = '456';
     process.env.TOKEN_AUDIENCE = 'https://app.example.test;https://api.example.test';
 
     const config = await loadConfig(logger);
@@ -48,6 +49,7 @@ describe('loadConfig', () => {
     expect(config.cache).toMatchObject({ uri: 'redis://valkey.example.test:6380', useRedisSets: true });
     expect(config.ttl.oidcInteraction).toBeGreaterThan(0);
     expect(config.ttl.passwordReset).toBe(123);
+    expect(config.ttl.emailConfirmation).toBe(456);
     expect(config.tokens).toMatchObject({
       validAudiences: ['my-ui', 'my-api'],
       keyRotationSeconds: 60 * 60 * 24 * 30,
@@ -62,6 +64,7 @@ describe('loadConfig', () => {
     delete process.env.CACHE_DISCONNECT_TIMEOUT;
     delete process.env.CACHE_KEEP_ALIVE;
     delete process.env.PASSWORD_RESET_TOKEN_TTL;
+    delete process.env.EMAIL_CONFIRMATION_TOKEN_TTL;
     delete process.env.TOKEN_AUDIENCE;
 
     const config = await loadConfig(logger);
@@ -73,6 +76,7 @@ describe('loadConfig', () => {
       keepAlive: 60_000,
     });
     expect(config.ttl.passwordReset).toBe(7_200);
+    expect(config.ttl.emailConfirmation).toBe(86_400);
     expect(config.tokens).toMatchObject({
       validAudiences: ['my-ui', 'my-api'],
     });

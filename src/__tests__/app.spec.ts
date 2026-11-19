@@ -1,6 +1,6 @@
 import request from 'supertest';
 import { decodeJwt } from 'jose';
-import { beforeEach, describe, expect, it, jest } from '@jest/globals';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import crypto from 'node:crypto';
 import type { Config, OAuthClient } from '../types.js';
 import type { CacheInterface } from '../cache.js';
@@ -17,7 +17,7 @@ jest.unstable_mockModule('@dmptool/utils', () => ({ queryTable }));
 jest.unstable_mockModule('../cache.js', () => ({ Cache: MockValkeyCache }));
 
 import type { Logger } from 'pino';
-const { createApp } = await import('../app.js');
+const { createApp, safeReturnTo } = await import('../app.js');
 const { Cache } = await import('../cache.js');
 const { KeyStore } = await import('../models/keyStore.js');
 const { createProvider } = await import('../oidc.js');
@@ -76,6 +76,7 @@ const buildApp = async (env = 'test') => {
       uiRefresh: 604800,
       uiPendingSSOSignup: 600,
       passwordReset: 123,
+      emailConfirmation: 456,
       oidcCode: 120,
       oidcAccess: 900,
       oidcRefresh: 31536000,
@@ -101,6 +102,15 @@ const buildApp = async (env = 'test') => {
     ssoEntityId: 'https://idp.example.test',
   });
   const provider = createProvider(config, cache, users, keys);
+  const tokens = new TokenService(
+    cache,
+    keys,
+    config.ttl.uiAccess,
+    config.ttl.uiRefresh,
+    config.ttl.passwordReset,
+    config.ttl.uiPendingSSOSignup,
+    config.ttl.emailConfirmation,
+  );
   return {
     app: createApp({
       config,
@@ -108,18 +118,13 @@ const buildApp = async (env = 'test') => {
       emailer,
       users,
       provider,
-      tokens: new TokenService(
-        cache,
-        keys,
-        config.ttl.uiAccess,
-        config.ttl.uiRefresh,
-        config.ttl.passwordReset,
-      ),
+      tokens,
       keys,
     }),
     cache,
     users,
     provider,
+    tokens,
   };
 };
 
@@ -612,6 +617,74 @@ describe('authentication routes', () => {
       .expect(302);
     expect(result.headers.location).toBe('/');
     expect(setCookies(result).join(';')).toContain('test_access=');
+  });
+
+  it('returns a user who signed in with SSO to the page they started from', async () => {
+    const { app } = await buildApp();
+    const csrf = await request(app).get('/csrf').expect(200);
+    await request(app).post('/sign-up')
+      .set('X-CSRF-Token', csrf.headers['x-csrf-token'] as string)
+      .send({
+        email: 'alice@example.test',
+        password: 'Passw0rd!',
+        givenName: 'Alice',
+        surName: 'Example',
+        affiliationId: '',
+        ssoId: 'alice@example.test',
+        acceptedTerms: 'true',
+      }).expect(201);
+
+    // The passthru carries returnTo to the callback through the SSO provider
+    const passthru = await request(app).get('/sso/passthru')
+      .query({ email: 'alice@example.test', entityId: 'https://idp.example.test', returnTo: '/email/confirm-email/abc' })
+      .expect(302);
+    const shibbolethLogin = new URL(passthru.headers.location, 'http://auth.example.test');
+    const target = new URL(shibbolethLogin.searchParams.get('target')!);
+    expect(target.pathname).toBe('/sso/callback');
+    expect(target.searchParams.get('returnTo')).toBe('/email/confirm-email/abc');
+
+    const callback = await request(app).get(`${target.pathname}${target.search}`)
+      .set(shibbolethProxyHeaders)
+      .set('x-shib-eppn', 'alice@example.test')
+      .set('x-shib-mail', 'alice@example.test')
+      .set('x-shib-identity-provider', 'https://idp.example.test')
+      .set('x-shib-session-id', 'sso-session')
+      .expect(302);
+    expect(callback.headers.location).toBe('/email/confirm-email/abc');
+    expect(setCookies(callback).join(';')).toContain('test_access=');
+  });
+
+  it('ignores a returnTo that would send an SSO user to another site', async () => {
+    const { app } = await buildApp();
+    const csrf = await request(app).get('/csrf').expect(200);
+    await request(app).post('/sign-up')
+      .set('X-CSRF-Token', csrf.headers['x-csrf-token'] as string)
+      .send({
+        email: 'alice@example.test',
+        password: 'Passw0rd!',
+        givenName: 'Alice',
+        surName: 'Example',
+        affiliationId: '',
+        ssoId: 'alice@example.test',
+        acceptedTerms: 'true',
+      }).expect(201);
+
+    const passthru = await request(app).post('/sso/passthru')
+      .send({ email: 'alice@example.test', entityId: 'https://idp.example.test', returnTo: 'https://evil.example' })
+      .expect(302);
+    const shibbolethLogin = new URL(passthru.headers.location, 'http://auth.example.test');
+    expect(new URL(shibbolethLogin.searchParams.get('target')!).search).toBe('');
+
+    // Someone could also edit the callback URL directly, so the callback checks returnTo too
+    const callback = await request(app).get('/sso/callback')
+      .query({ returnTo: '//evil.example/path' })
+      .set(shibbolethProxyHeaders)
+      .set('x-shib-eppn', 'alice@example.test')
+      .set('x-shib-mail', 'alice@example.test')
+      .set('x-shib-identity-provider', 'https://idp.example.test')
+      .set('x-shib-session-id', 'sso-session')
+      .expect(302);
+    expect(callback.headers.location).toBe('/');
   });
 
   it('rejects an invalid Shibboleth callback payload', async () => {
@@ -1518,3 +1591,241 @@ const interactionUid = (response: request.Response): string => {
   if (!uid) throw new Error(`Expected an interaction redirect, received: ${response.headers.location}`);
   return uid;
 };
+
+describe('email confirmation routes', () => {
+  // Building the app generates signing keys and signing up hashes passwords, both of which are slow. Do them once
+  // for this block so these tests don't slow down the rest of the suite.
+  type Built = Awaited<ReturnType<typeof buildApp>>;
+  type SignedIn = { agent: ReturnType<typeof request.agent>; userId: string };
+  let built: Built;
+  let alice: SignedIn;
+  let bob: SignedIn;
+  const spies: Array<{ mockRestore: () => void }> = [];
+
+  const signUp = async (email: string): Promise<SignedIn> => {
+    const agent = request.agent(built.app);
+    const csrf = await agent.get('/csrf').expect(200);
+    await agent.post('/sign-up')
+      .set('X-CSRF-Token', csrf.headers['x-csrf-token'] as string)
+      .send({
+        email,
+        password: 'Passw0rd!',
+        givenName: 'Alice',
+        surName: 'Example',
+        affiliationId: '',
+        acceptedTerms: 'true',
+      })
+      .expect(201);
+    return { agent, userId: String(database.findUserByEmail(email)!.id) };
+  };
+
+  beforeAll(async () => {
+    database = new MockMySqlStore();
+    built = await buildApp();
+    alice = await signUp('alice@example.test');
+    bob = await signUp('bob@example.test');
+  });
+
+  beforeEach(() => {
+    sendMail.mockReset();
+    sendMail.mockResolvedValue({ messageId: 'message-1' });
+  });
+
+  afterEach(() => {
+    spies.splice(0).forEach((spy) => spy.mockRestore());
+  });
+
+  // Track spies so afterEach can restore the real methods on the shared app
+  const stubStatus = () => {
+    const stub = jest.spyOn(built.users, 'emailConfirmationStatus');
+    spies.push(stub);
+    return stub;
+  };
+  const stubConfirm = () => {
+    const stub = jest.spyOn(built.users, 'confirmEmail');
+    spies.push(stub);
+    return stub;
+  };
+
+  const post = async (agent: ReturnType<typeof request.agent>, path: string, body: object) => {
+    const csrf = await agent.get('/csrf').expect(200);
+    return agent.post(path).set('X-CSRF-Token', csrf.headers['x-csrf-token'] as string).send(body);
+  };
+
+  // Read the path and token out of the link in the most recent confirmation email
+  const linkFromLastEmail = (): { path: string; token: string } => {
+    const html = sendMail.mock.calls.at(-1)?.[0]?.html ?? '';
+    const href = html.match(/href="([^"]*\/email\/confirm-email\/[^"]+)"/)?.[1] ?? '';
+    const { pathname } = new URL(href);
+    return { path: pathname, token: decodeURIComponent(pathname.split('/').at(-1)!) };
+  };
+
+  // Have the given user request a confirmation email and return the token from its link
+  const sendToken = async (user: SignedIn): Promise<string> => {
+    stubStatus().mockResolvedValueOnce('pending');
+    const sent = await post(user.agent, '/email-confirmation/token', { email: 'alias@example.test' });
+    expect(sent.status).toBe(201);
+    return linkFromLastEmail().token;
+  };
+
+  it('requires a CSRF token and a signed-in user to send a confirmation email', async () => {
+    await alice.agent.post('/email-confirmation/token').send({ email: 'alias@example.test' })
+      .expect(403, { message: 'Invalid CSRF token' });
+    const signedOut = await post(request.agent(built.app), '/email-confirmation/token', { email: 'alias@example.test' });
+    expect(signedOut.status).toBe(401);
+    const missing = await post(alice.agent, '/email-confirmation/token', { email: '  ' });
+    expect({ status: missing.status, body: missing.body })
+      .toEqual({ status: 400, body: { success: false, message: 'Email is required' } });
+    expect(sendMail).not.toHaveBeenCalled();
+  });
+
+  it('only sends confirmation emails for addresses the user added and nobody else owns', async () => {
+    const status = stubStatus();
+
+    status.mockResolvedValueOnce('missing');
+    const missing = await post(alice.agent, '/email-confirmation/token', { email: 'alias@example.test' });
+    expect(missing.status).toBe(404);
+
+    status.mockResolvedValueOnce('confirmed');
+    const confirmed = await post(alice.agent, '/email-confirmation/token', { email: 'alias@example.test' });
+    expect({ status: confirmed.status, body: confirmed.body }).toEqual({
+      status: 409,
+      body: { success: false, reason: 'alreadyConfirmed', message: 'Email is already confirmed' },
+    });
+
+    status.mockResolvedValueOnce('claimedByOther');
+    const claimed = await post(alice.agent, '/email-confirmation/token', { email: 'alias@example.test' });
+    expect({ status: claimed.status, body: claimed.body }).toEqual({
+      status: 409,
+      body: { success: false, reason: 'claimedByOther', message: 'Email has already been confirmed by another account' },
+    });
+
+    expect(status).toHaveBeenCalledWith(alice.userId, 'alias@example.test');
+    expect(sendMail).not.toHaveBeenCalled();
+  });
+
+  it('emails the confirmation link to the address and never returns the token', async () => {
+    stubStatus().mockResolvedValueOnce('pending');
+
+    const sent = await post(alice.agent, '/email-confirmation/token', { email: ' Alias@Example.test ' });
+
+    expect({ status: sent.status, body: sent.body }).toEqual({ status: 201, body: { success: true, message: 'ok' } });
+    expect(sendMail).toHaveBeenCalledWith(expect.objectContaining({ to: 'Alias@Example.test' }));
+    const link = linkFromLastEmail();
+    // The link only carries the token, so it doesn't expose the user's ID
+    expect(link.path).toBe(`/email/confirm-email/${encodeURIComponent(link.token)}`);
+    expect(JSON.stringify(sent.body)).not.toContain(link.token);
+    await expect(built.tokens.emailConfirmationClaim(link.token))
+      .resolves.toEqual({ userId: alice.userId, email: 'alias@example.test' });
+  });
+
+  it('removes the token when the confirmation email cannot be sent', async () => {
+    stubStatus().mockResolvedValueOnce('pending');
+    const remove = jest.spyOn(built.tokens, 'deleteEmailConfirmationToken');
+    spies.push(remove);
+    sendMail.mockRejectedValueOnce(new Error('SES is down'));
+
+    const failed = await post(alice.agent, '/email-confirmation/token', { email: 'alias@example.test' });
+
+    expect({ status: failed.status, body: failed.body })
+      .toEqual({ status: 502, body: { success: false, message: 'Unable to send email confirmation email' } });
+    expect(remove).toHaveBeenCalledTimes(1);
+    await expect(built.tokens.emailConfirmationClaim(remove.mock.calls[0]![0])).resolves.toBeUndefined();
+  });
+
+  it('confirms the email once for the signed-in user who received the link', async () => {
+    const token = await sendToken(alice);
+    const confirm = stubConfirm().mockResolvedValue('confirmed');
+
+    await alice.agent.post('/email-confirmation/confirm').send({ token }).expect(403, { message: 'Invalid CSRF token' });
+    const signedOut = await post(request.agent(built.app), '/email-confirmation/confirm', { token });
+    expect(signedOut.status).toBe(401);
+
+    const confirmed = await post(alice.agent, '/email-confirmation/confirm', { token });
+    expect({ status: confirmed.status, body: confirmed.body })
+      .toEqual({ status: 200, body: { success: true, message: 'ok', email: 'alias@example.test' } });
+    expect(confirm).toHaveBeenCalledWith(alice.userId, 'alias@example.test');
+
+    const reused = await post(alice.agent, '/email-confirmation/confirm', { token });
+    expect({ status: reused.status, reason: reused.body.reason }).toEqual({ status: 400, reason: 'invalid' });
+    expect(confirm).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects missing and unknown tokens', async () => {
+    for (const body of [{}, { token: '' }, { token: 42 }, { token: 'not-a-real-token' }]) {
+      const response = await post(alice.agent, '/email-confirmation/confirm', body);
+      expect({ status: response.status, body: response.body }).toEqual({
+        status: 400,
+        body: { success: false, reason: 'invalid', message: 'Invalid or expired email confirmation token' },
+      });
+    }
+  });
+
+  it('leaves the token unused when a different account tries to confirm it', async () => {
+    const token = await sendToken(alice);
+    const confirm = stubConfirm().mockResolvedValue('confirmed');
+
+    const wrongAccount = await post(bob.agent, '/email-confirmation/confirm', { token });
+    expect({ status: wrongAccount.status, body: wrongAccount.body }).toEqual({
+      status: 403,
+      body: {
+        success: false,
+        reason: 'wrongAccount',
+        message: 'This email confirmation link was sent for a different account',
+      },
+    });
+    expect(confirm).not.toHaveBeenCalled();
+
+    const rightAccount = await post(alice.agent, '/email-confirmation/confirm', { token });
+    expect(rightAccount.status).toBe(200);
+    expect(confirm).toHaveBeenCalledWith(alice.userId, 'alias@example.test');
+  });
+
+  it('reports when the email cannot be confirmed', async () => {
+    const confirm = stubConfirm();
+
+    confirm.mockResolvedValueOnce('claimedByOther');
+    const claimed = await post(alice.agent, '/email-confirmation/confirm', { token: await sendToken(alice) });
+    expect({ status: claimed.status, reason: claimed.body.reason }).toEqual({ status: 409, reason: 'claimedByOther' });
+
+    confirm.mockResolvedValueOnce('notFound');
+    const removed = await post(alice.agent, '/email-confirmation/confirm', { token: await sendToken(alice) });
+    expect({ status: removed.status, reason: removed.body.reason }).toEqual({ status: 400, reason: 'invalid' });
+
+    // Another request used the token up between the ownership check and the consume
+    const racedToken = await sendToken(alice);
+    const consume = jest.spyOn(built.tokens, 'consumeEmailConfirmationToken').mockResolvedValueOnce(undefined);
+    spies.push(consume);
+    const raced = await post(alice.agent, '/email-confirmation/confirm', { token: racedToken });
+    expect({ status: raced.status, reason: raced.body.reason }).toEqual({ status: 400, reason: 'invalid' });
+    expect(confirm).toHaveBeenCalledTimes(2);
+  });
+
+  it('forwards unexpected errors to the error handler', async () => {
+    stubStatus().mockRejectedValueOnce(new Error('database down'));
+    const tokenError = await post(alice.agent, '/email-confirmation/token', { email: 'alias@example.test' });
+    expect(tokenError.status).toBe(500);
+
+    const token = await sendToken(alice);
+    stubConfirm().mockRejectedValueOnce(new Error('database down'));
+    const confirmError = await post(alice.agent, '/email-confirmation/confirm', { token });
+    expect(confirmError.status).toBe(500);
+  });
+});
+
+describe('safeReturnTo', () => {
+  it('keeps paths on this site, including their query string and hash', () => {
+    expect(safeReturnTo('/email/confirm-email/abc')).toBe('/email/confirm-email/abc');
+    expect(safeReturnTo('/plans?page=2#top')).toBe('/plans?page=2#top');
+    expect(safeReturnTo('/a/../b')).toBe('/b');
+  });
+
+  it('rejects values that are missing, too long or not a path on this site', () => {
+    for (const value of [
+      undefined, null, 42, ['/a'], '', 'plans', 'https://evil.example', 'javascript:alert(1)',
+      '//evil.example', '/\\evil.example', '/\tfoo', '/a\nb', `/${'a'.repeat(2048)}`,
+    ]) {
+      expect(safeReturnTo(value)).toBeUndefined();
+    }
+  });
+});
