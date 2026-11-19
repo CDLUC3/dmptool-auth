@@ -33,7 +33,9 @@ const config: Config = {
   helpDeskAddress: 'help@example.test',
   helpPageUrl: 'https://app.example.test/help',
   doNotReplyAddress: 'no-reply@example.test',
+  maxFailedSignInAttempts: 5,
   issuer: 'https://auth.example.test',
+  oidcApiResourceUri: 'https://api.example.test',
   audienceAPI: 'my-api',
   audienceUI: 'my-ui',
   tokens: {
@@ -68,6 +70,8 @@ const config: Config = {
     oidcGrant: 120,
     oidcIdToken: 600,
     oidcInteraction: 600,
+    oidcClientCredentialsToken: 3600,
+    uiPendingSSOSignup: 600,
   },
   ses: {
     region: 'us-west-2',
@@ -107,7 +111,7 @@ describe('email service', () => {
     }));
   });
 
-  it('sends an email confirmation email with the confirmation link', async () => {
+  it('should send an email confirmation email with the confirmation link', async () => {
     process.env.NODE_ENV = 'production';
 
     await expect(sendEmailConfirmationEmail(config, emailer, '42', 'alias@example.test', 'abc_123-XYZ'))
@@ -125,7 +129,7 @@ describe('email service', () => {
     expect(html).toContain("If you're asked to sign in, use the email address you normally sign in with, not this one.");
   });
 
-  it('escapes the email address and token in the email confirmation email', async () => {
+  it('should escape the email address and token in the email confirmation email', async () => {
     process.env.NODE_ENV = 'production';
 
     await sendEmailConfirmationEmail(
@@ -143,7 +147,7 @@ describe('email service', () => {
     expect(html).toContain('This link expires in 1 hour and can only be used once.');
   });
 
-  it('adds a protocol to the confirmation link only when DOMAIN does not include one', async () => {
+  it('should add a protocol to the confirmation link only when DOMAIN does not include one', async () => {
     process.env.NODE_ENV = 'production';
     await sendEmailConfirmationEmail({ ...config, domain: 'http://localhost:3000/' }, emailer, '42', 'a@example.test', 't');
     await sendEmailConfirmationEmail({ ...config, domain: 'app.example.test' }, emailer, '42', 'a@example.test', 't');
@@ -152,7 +156,7 @@ describe('email service', () => {
     expect(sendMail.mock.calls[1]?.[0]?.html).toContain('href="https://app.example.test/email/confirm-email/t"');
   });
 
-  it('uses an http confirmation link and logs the email instead of sending it in development', async () => {
+  it('should use an http confirmation link and logs the email instead of sending it in development', async () => {
     process.env.NODE_ENV = 'development';
 
     await expect(sendEmailConfirmationEmail({ ...config, domain: 'app.example.test' }, emailer, '42', 'alias@example.test', 'token'))
@@ -165,7 +169,7 @@ describe('email service', () => {
     );
   });
 
-  it('does not send an email confirmation email without an email address', async () => {
+  it('should not send an email confirmation email without an email address', async () => {
     await expect(sendEmailConfirmationEmail(config, emailer, '42', '', 'token')).resolves.toBe(false);
     expect(sendMail).not.toHaveBeenCalled();
     expect(logger.error).toHaveBeenCalledWith({ userId: '42' }, expect.stringContaining('No email address'));

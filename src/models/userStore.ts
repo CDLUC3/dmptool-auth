@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { queryTable } from '@dmptool/utils';
 import type { Config, dbQueryResponse, PublicUser, SsoEntityRow, User, UserRow } from '../types.js';
+import { normalizeEmail } from '../utils.js';
 
 const passwordSpecialCharacters = /[`!@#$%^&*_+\-=?~\s]/;
 const disallowedPasswordCharacters = /[(){}[\]|\\:;"'<>,./]/;
@@ -119,14 +120,6 @@ const isValidPassword = (password: string): boolean =>
   && /\d/.test(password)
   && passwordSpecialCharacters.test(password)
   && !disallowedPasswordCharacters.test(password);
-
-/**
- * Normalizes an email address by trimming whitespace and converting to lowercase.
- *
- * @param email The email address to normalize.
- * @returns The normalized email address.
- */
-const normalizeEmail = (email: string): string => email.trim().toLowerCase();
 
 /**
  * Type guard to check if a value is either a string or null.

@@ -19,6 +19,7 @@ import type { ConfirmEmailResult, EmailConfirmationStatus, SignupAttempt, UserSt
 import type { KeyStore } from './models/keyStore.js';
 import type { Mail, SMTPSentMessageInfo } from "nodemailer";
 import { sendAccountLockedEmail, sendEmailConfirmationEmail, sendResetPasswordEmail } from "./email.js";
+import { normalizeEmail } from './utils.js';
 
 interface Dependencies {
   config: Config;
@@ -59,8 +60,6 @@ const hasTrustedShibbolethProxy = (headers: Request['headers'], secret: string |
 
 const stringArray = (value: unknown): string[] =>
   Array.isArray(value) && value.every((item): item is string => typeof item === 'string') ? value : [];
-
-const normalizeEmail = (email: string): string => email.trim().toLowerCase();
 
 /**
  * Returns the given value only if it is a path on the UI's own site (e.g. `/email/confirm-email/abc`), so that a
@@ -716,7 +715,7 @@ export const createApp = (
         return;
       }
 
-      const token: string = await tokens.issueEmailConfirmationToken(userId, email.trim().toLowerCase());
+      const token: string = await tokens.issueEmailConfirmationToken(userId, normalizeEmail(email));
       const delivered: boolean = await sendEmailConfirmationEmail(config, emailer, userId, email.trim(), token);
       if (!delivered) {
         await tokens.deleteEmailConfirmationToken(token);

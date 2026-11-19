@@ -7,6 +7,7 @@ import type {
   ShibbolethAssertion,
   TokenClaims
 } from './types.js';
+import { normalizeEmail } from './utils.js';
 
 // Helper functions to generate cache keys for refresh tokens and revoked access tokens
 const refreshKey = (token: string): string => `auth:refresh:${token}`;
@@ -18,7 +19,7 @@ const passwordResetKey = (token: string): string => `auth:password-reset:${token
 const sha256 = (value: string): string => createHash('sha256').update(value).digest('hex');
 const emailConfirmationKey = (tokenHash: string): string => `auth:email-confirmation:${tokenHash}`;
 const emailConfirmationOwnerKey = (userId: string, email: string): string =>
-  `auth:email-confirmation-owner:${sha256(`${userId}:${email.trim().toLowerCase()}`)}`;
+  `auth:email-confirmation-owner:${sha256(`${userId}:${normalizeEmail(email)}`)}`;
 
 /**
  * The user and email address that an email confirmation token was issued for.
