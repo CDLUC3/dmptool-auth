@@ -106,8 +106,7 @@ export const sendResetPasswordEmail = async (
     );
     return false;
   }
-  const protocol = ['development', 'tests'].includes(process.env.NODE_ENV || '') ? 'http://' : 'https://';
-  const resetPasswordUrl = `${protocol}${config.domain}/login/reset-password?token=${resetToken}`;
+  const resetPasswordUrl = `${appBaseUrl(config)}/login/reset-password?token=${encodeURIComponent(resetToken)}`;
 
   const message = `
 <p>Hello ${userEmail},</p>
@@ -194,7 +193,7 @@ const escapeHtml = (value: string): string => value
 const appBaseUrl = (config: Config): string => {
   if (/^https?:\/\//i.test(config.domain)) return config.domain.replace(/\/+$/, '');
 
-  const protocol = ['development', 'tests'].includes(process.env.NODE_ENV || '') ? 'http://' : 'https://';
+  const protocol = ['development', 'test'].includes(config.env) ? 'http://' : 'https://';
   return `${protocol}${config.domain.replace(/\/+$/, '')}`;
 };
 

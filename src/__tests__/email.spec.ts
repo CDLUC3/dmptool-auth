@@ -149,17 +149,33 @@ describe('email service', () => {
 
   it('should add a protocol to the confirmation link only when DOMAIN does not include one', async () => {
     process.env.NODE_ENV = 'production';
-    await sendEmailConfirmationEmail({ ...config, domain: 'http://localhost:3000/' }, emailer, '42', 'a@example.test', 't');
-    await sendEmailConfirmationEmail({ ...config, domain: 'app.example.test' }, emailer, '42', 'a@example.test', 't');
+    const production: Config = { ...config, env: 'production' };
+    await sendEmailConfirmationEmail({ ...production, domain: 'http://localhost:3000/' }, emailer, '42', 'a@example.test', 't');
+    await sendEmailConfirmationEmail({ ...production, domain: 'app.example.test' }, emailer, '42', 'a@example.test', 't');
 
     expect(sendMail.mock.calls[0]?.[0]?.html).toContain('href="http://localhost:3000/email/confirm-email/t"');
+    expect(sendMail.mock.calls[1]?.[0]?.html).toContain('href="https://app.example.test/email/confirm-email/t"');
+  });
+
+  it('should use the configured env rather than NODE_ENV to choose the link protocol', async () => {
+    process.env.NODE_ENV = 'production';
+    await sendEmailConfirmationEmail(
+      { ...config, env: 'development', domain: 'app.example.test' }, emailer, '42', 'a@example.test', 't',
+    );
+    await sendEmailConfirmationEmail(
+      { ...config, env: 'production', domain: 'app.example.test' }, emailer, '42', 'a@example.test', 't',
+    );
+
+    expect(sendMail.mock.calls[0]?.[0]?.html).toContain('href="http://app.example.test/email/confirm-email/t"');
     expect(sendMail.mock.calls[1]?.[0]?.html).toContain('href="https://app.example.test/email/confirm-email/t"');
   });
 
   it('should use an http confirmation link and logs the email instead of sending it in development', async () => {
     process.env.NODE_ENV = 'development';
 
-    await expect(sendEmailConfirmationEmail({ ...config, domain: 'app.example.test' }, emailer, '42', 'alias@example.test', 'token'))
+    await expect(sendEmailConfirmationEmail(
+      { ...config, env: 'development', domain: 'app.example.test' }, emailer, '42', 'alias@example.test', 'token',
+    ))
       .resolves.toBe(true);
 
     expect(sendMail).not.toHaveBeenCalled();
@@ -185,8 +201,20 @@ describe('email service', () => {
       replyTo: 'help@example.test',
       to: 'alice@example.test',
       subject: 'DMP Tool - Reset Your Password',
-      html: expect.stringContaining('https://app.example.test/login/reset-password?token=reset-token'),
+      html: expect.stringContaining('href="https://app.example.test/login/reset-password?token=reset-token"'),
     }));
+  });
+
+  it('should build the reset link the same way as the confirmation link', async () => {
+    process.env.NODE_ENV = 'production';
+    const production: Config = { ...config, env: 'production' };
+    await sendResetPasswordEmail({ ...production, domain: 'https://app.example.test/' }, emailer, 'a@example.test', 'a+b/c');
+    await sendResetPasswordEmail({ ...production, domain: 'app.example.test' }, emailer, 'a@example.test', 't');
+
+    const withProtocol: string | undefined = sendMail.mock.calls[0]?.[0]?.html as string | undefined;
+    expect(withProtocol).toContain('href="https://app.example.test/login/reset-password?token=a%2Bb%2Fc"');
+    expect(withProtocol).not.toContain('https://https://');
+    expect(sendMail.mock.calls[1]?.[0]?.html).toContain('href="https://app.example.test/login/reset-password?token=t"');
   });
 
   it('accepts SMTP responses without a message ID', async () => {
