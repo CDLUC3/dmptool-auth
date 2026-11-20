@@ -11,6 +11,7 @@ export interface Config {
   port: number;
 
   env: string;
+  // The base URL of the UI (e.g. https://dmptool.org), built and validated from DOMAIN when the config loads
   domain: string;
   applicationName: string;
   helpDeskAddress: string;
@@ -44,6 +45,7 @@ export interface Config {
   ttl: {
     csrf: number;
     passwordReset: number;
+    emailConfirmation: number;
 
     uiAccess: number;
     uiRefresh: number;

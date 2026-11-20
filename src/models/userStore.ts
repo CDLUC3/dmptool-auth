@@ -2,7 +2,8 @@ import type { ResultSetHeader } from "mysql2";
 import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { queryTable } from '@dmptool/utils';
-import type {Config, dbQueryResponse, PublicUser, SsoEntityRow, User, UserRow} from '../types.js';
+import type { Config, dbQueryResponse, PublicUser, SsoEntityRow, User, UserRow } from '../types.js';
+import { normalizeEmail } from '../utils.js';
 
 const passwordSpecialCharacters = /[`!@#$%^&*_+\-=?~\s]/;
 const disallowedPasswordCharacters = /[(){}[\]|\\:;"'<>,./]/;
@@ -31,6 +32,23 @@ export type SignupAttempt = PublicUser & {
 type AuthenticationAttempt = PublicUser & {
   authenticationFailed?: true;
 };
+
+// Where an email address stands for a given user:
+//   - missing: the user has not added the address
+//   - pending: the user added it and it is waiting to be confirmed
+//   - confirmed: the user already confirmed it
+//   - claimedByOther: another account uses it as its primary email or has already confirmed it
+export type EmailConfirmationStatus = 'missing' | 'pending' | 'confirmed' | 'claimedByOther';
+
+export type ConfirmEmailResult = 'confirmed' | 'notFound' | 'claimedByOther';
+
+interface UserEmailRow {
+  id: number;
+  userId: number;
+  email: string;
+  isPrimary: number | boolean;
+  isConfirmed: number | boolean;
+}
 
 /**
  * Converts a User object to a PublicUser object by omitting the passwordHash field.
@@ -104,14 +122,6 @@ const isValidPassword = (password: string): boolean =>
   && !disallowedPasswordCharacters.test(password);
 
 /**
- * Normalizes an email address by trimming whitespace and converting to lowercase.
- *
- * @param email The email address to normalize.
- * @returns The normalized email address.
- */
-const normalizeEmail = (email: string): string => email.trim().toLowerCase();
-
-/**
  * Type guard to check if a value is either a string or null.
  *
  * @param value The value to check.
@@ -156,7 +166,7 @@ const calculateRemainingSignInAttempts = (
  * Manages DMPTool user accounts stored in the `users` and `userEmails` tables.
  */
 export class UserStore {
-  constructor(private readonly config: Config) {}
+  constructor(private readonly config: Config) { }
 
   /**
    * Gets a peppered version of the password using the configured pepper secret.
@@ -166,9 +176,9 @@ export class UserStore {
    */
   private getPepperedPassword(password: string): string {
     return crypto
-        .createHmac('sha256', this.config.pepperSecret)
-        .update(password.trim())
-        .digest('hex');
+      .createHmac('sha256', this.config.pepperSecret)
+      .update(password.trim())
+      .digest('hex');
   }
 
   /**
@@ -443,13 +453,13 @@ export class UserStore {
 
     const passwordHash: string = await this.hashPassword(password);
     const response: dbQueryResponse = await queryTable(
-        { ...this.config.database, logger: this.config.logger },
-        `UPDATE ${usersTable} SET password = ?, tokenVersion = tokenVersion + 1
+      { ...this.config.database, logger: this.config.logger },
+      `UPDATE ${usersTable} SET password = ?, tokenVersion = tokenVersion + 1
         WHERE id = ? AND active = 1 AND locked = 0`,
-        [passwordHash, id],
+      [passwordHash, id],
     );
     return Boolean(response.results && !Array.isArray(response.results)
-        && (response.results as ResultSetHeader).affectedRows > 0);
+      && (response.results as ResultSetHeader).affectedRows > 0);
   }
 
   /**
@@ -465,10 +475,10 @@ export class UserStore {
 
     const pepperedPassword: string = this.getPepperedPassword(currentPassword);
     const user: User | undefined = await this.findRaw(
-        `SELECT u.id, u.password, u.role, u.givenName, u.surName, u.affiliationId, u.languageId, u.ssoId, u.tokenVersion, ue.email, u.locked, u.failed_sign_in_attempts
+      `SELECT u.id, u.password, u.role, u.givenName, u.surName, u.affiliationId, u.languageId, u.ssoId, u.tokenVersion, ue.email, u.locked, u.failed_sign_in_attempts
        FROM ${usersTable} u JOIN ${userEmailsTable} ue ON ue.userId = u.id AND ue.isPrimary = 1
        WHERE u.id = ? AND u.active = 1 AND u.locked = 0 LIMIT 1`,
-        [id],
+      [id],
     );
     if (!user || !(await bcrypt.compare(pepperedPassword, user.passwordHash))) return false;
 
@@ -483,11 +493,11 @@ export class UserStore {
   async ssoLogin(userId: string): Promise<void> {
     // Update the last sign-in timestamp and method for the user
     await queryTable(
-        {...this.config.database, logger: this.config.logger},
-        `UPDATE ${usersTable} SET failed_sign_in_attempts = 0, last_sign_in = CURRENT_TIMESTAMP,
+      { ...this.config.database, logger: this.config.logger },
+      `UPDATE ${usersTable} SET failed_sign_in_attempts = 0, last_sign_in = CURRENT_TIMESTAMP,
            last_sign_in_via = ?
          WHERE id = ?`,
-        ['SSO', userId],
+      ['SSO', userId],
     );
   }
 
@@ -593,7 +603,7 @@ export class UserStore {
     const domain: string = emailParts[emailParts.length - 1]?.trim()?.toLowerCase();
     if (!domain) return undefined;
 
-    const ssoEntityRows : dbQueryResponse = await queryTable(
+    const ssoEntityRows: dbQueryResponse = await queryTable(
       { ...this.config.database, logger: this.config.logger },
       `SELECT aed.affiliationId, a.displayName, a.ssoEntityId
        FROM affiliationEmailDomains AS aed JOIN affiliations AS a ON aed.affiliationId = a.uri
@@ -684,11 +694,11 @@ export class UserStore {
   async findSsoEntityIdByURI(
     uri: string,
   ): Promise<SsoEntityRow | undefined> {
-    const ssoEntityRows : dbQueryResponse = await queryTable(
-        { ...this.config.database, logger: this.config.logger },
-        `SELECT a.uri as affiliationId, a.displayName, a.ssoEntityId
+    const ssoEntityRows: dbQueryResponse = await queryTable(
+      { ...this.config.database, logger: this.config.logger },
+      `SELECT a.uri as affiliationId, a.displayName, a.ssoEntityId
       FROM affiliations AS a WHERE a.uri = ? LIMIT 1;`,
-        [uri],
+      [uri],
     );
     if (!ssoEntityRows.results || !Array.isArray(ssoEntityRows.results)) return undefined;
 
@@ -703,9 +713,9 @@ export class UserStore {
    * @returns A Promise that resolves to the SSO entity ID and display name if found, otherwise undefined.
    */
   async findSsoEntityIdById(
-      entityId: string,
+    entityId: string,
   ): Promise<SsoEntityRow | undefined> {
-    const ssoEntityRows : dbQueryResponse = await queryTable(
+    const ssoEntityRows: dbQueryResponse = await queryTable(
       { ...this.config.database, logger: this.config.logger },
       `SELECT a.uri as affiliationId, a.displayName, a.ssoEntityId
       FROM affiliations AS a WHERE a.ssoEntityId = ? LIMIT 1;`,
@@ -766,6 +776,90 @@ export class UserStore {
       `UPDATE ${projectCollaboratorsTable} SET userId = ? WHERE email = ?`,
       [userId, email],
     );
+  }
+
+  /**
+   * Determine where an email address stands for the given user, so that we only send confirmation emails
+   * for addresses the user has added and that nobody else owns.
+   *
+   * @param userId the ID of the user
+   * @param email the email address
+   * @returns the status of the email address for the user
+   */
+  async emailConfirmationStatus(userId: string, email: string): Promise<EmailConfirmationStatus> {
+    const rows: UserEmailRow[] = await this.findUserEmailRows(email);
+    const own: UserEmailRow | undefined = rows.find((row): boolean => String(row.userId) === String(userId));
+    if (!own) return 'missing';
+    if (own.isConfirmed) return 'confirmed';
+
+    const claimed: boolean = rows.some((row): boolean => String(row.userId) !== String(userId)
+      && (Boolean(row.isPrimary) || Boolean(row.isConfirmed)));
+    return claimed ? 'claimedByOther' : 'pending';
+  }
+
+  /**
+   * Mark an email address as confirmed for the user. This also claims any open invitations to collaborate on
+   * templates and projects that were sent to the address, and removes unconfirmed copies of the address that
+   * other accounts added.
+   *
+   * @param userId the ID of the user who confirmed the email address
+   * @param email the email address that was confirmed
+   * @returns whether the email was confirmed, could not be found, or is owned by another account
+   */
+  async confirmEmail(userId: string, email: string): Promise<ConfirmEmailResult> {
+    const rows: UserEmailRow[] = await this.findUserEmailRows(email); // filters by email address, regardless of userId
+    // Find the record that belongs to the user confirming the email address
+    const own: UserEmailRow | undefined = rows.find((row): boolean => String(row.userId) === String(userId));
+    if (!own) return 'notFound';
+
+    // Same email address that belongs to different users
+    const others: UserEmailRow[] = rows.filter((row): boolean => String(row.userId) !== String(userId));
+    if (others.some((row): boolean => Boolean(row.isPrimary) || Boolean(row.isConfirmed))) {
+      return 'claimedByOther';
+    }
+
+    const response: dbQueryResponse = await queryTable(
+      { ...this.config.database, logger: this.config.logger },
+      `UPDATE ${userEmailsTable} SET isConfirmed = 1, modifiedById = ?, modified = CURRENT_TIMESTAMP
+       WHERE id = ? AND userId = ?`,
+      [userId, own.id, userId],
+    );
+    if (!response.results || Array.isArray(response.results) || (response.results as ResultSetHeader).affectedRows === 0) {
+      return 'notFound';
+    }
+
+    await this.claimOpenTemplateCollaborations(own.email, Number(userId));
+    await this.claimOpenProjectCollaborations(own.email, Number(userId));
+
+    // Deleting unconfirmed copies of the email address that were not created by user signing up (i.e., not primary). This is safe because
+    // we already checked that there are no other confirmed or primary copies of the email address.
+    if (others.length > 0) {
+      const ids: number[] = others.map((row): number => row.id);
+      await queryTable(
+        { ...this.config.database, logger: this.config.logger },
+        `DELETE FROM ${userEmailsTable} WHERE id IN (${ids.map((): string => '?').join(', ')})
+         AND isPrimary = 0 AND isConfirmed = 0`,
+        ids,
+      );
+    }
+    return 'confirmed';
+  }
+
+  /**
+   * Find every userEmails record for the email address, regardless of which user added it.
+   *
+   * @param email the email address
+   * @returns the matching records
+   * @private
+   */
+  private async findUserEmailRows(email: string): Promise<UserEmailRow[]> {
+    const rows: dbQueryResponse = await queryTable(
+      { ...this.config.database, logger: this.config.logger },
+      `SELECT id, userId, email, isPrimary, isConfirmed FROM ${userEmailsTable} WHERE LOWER(email) = ?`,
+      [normalizeEmail(email)],
+    );
+    const results: unknown[] = Array.isArray(rows) ? rows : Array.isArray(rows.results) ? rows.results : [];
+    return results as UserEmailRow[];
   }
 
   /**

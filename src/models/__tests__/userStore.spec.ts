@@ -521,4 +521,127 @@ describe('UserStore', () => {
     queryTable.mockResolvedValueOnce({ results: { affectedRows: 0 }, fields: [] });
     await expect(repository.resetPassword('1', 'Newpass1!')).resolves.toBe(false);
   });
+
+  describe('email confirmation', () => {
+    const rows = (...entries: Array<{ id: number; userId: number; isPrimary?: number; isConfirmed?: number; email?: string }>) => ({
+      results: entries.map((entry) => ({
+        email: 'alias@example.test', isPrimary: 0, isConfirmed: 0, ...entry,
+      })),
+      fields: [],
+    });
+    const updated = (affectedRows: number) => ({ results: { affectedRows }, fields: [] });
+
+    it('looks up every copy of the email address, ignoring case', async () => {
+      const repository = new UserStore(config as never);
+      queryTable.mockResolvedValueOnce(rows());
+
+      await repository.emailConfirmationStatus('1', ' Alias@Example.TEST ');
+
+      expect(queryTable).toHaveBeenLastCalledWith(
+        expect.anything(),
+        expect.stringContaining('SELECT id, userId, email, isPrimary, isConfirmed FROM user_emails WHERE LOWER(email) = ?'),
+        ['alias@example.test'],
+      );
+    });
+
+    it('reports the status of an email address for the user', async () => {
+      const repository = new UserStore(config as never);
+
+      queryTable.mockResolvedValueOnce(rows({ id: 1, userId: 2 }));
+      await expect(repository.emailConfirmationStatus('1', 'alias@example.test')).resolves.toBe('missing');
+
+      queryTable.mockResolvedValueOnce(rows({ id: 1, userId: 1, isConfirmed: 1 }));
+      await expect(repository.emailConfirmationStatus('1', 'alias@example.test')).resolves.toBe('confirmed');
+
+      queryTable.mockResolvedValueOnce(rows({ id: 1, userId: 1 }, { id: 2, userId: 2 }));
+      await expect(repository.emailConfirmationStatus('1', 'alias@example.test')).resolves.toBe('pending');
+
+      queryTable.mockResolvedValueOnce(rows({ id: 1, userId: 1 }, { id: 2, userId: 2, isPrimary: 1 }));
+      await expect(repository.emailConfirmationStatus('1', 'alias@example.test')).resolves.toBe('claimedByOther');
+
+      queryTable.mockResolvedValueOnce(rows({ id: 1, userId: 1 }, { id: 2, userId: 2, isConfirmed: 1 }));
+      await expect(repository.emailConfirmationStatus('1', 'alias@example.test')).resolves.toBe('claimedByOther');
+
+      // Some queryTable versions return the rows directly instead of in a wrapper
+      queryTable.mockResolvedValueOnce(rows({ id: 1, userId: 1 }).results);
+      await expect(repository.emailConfirmationStatus('1', 'alias@example.test')).resolves.toBe('pending');
+
+      queryTable.mockResolvedValueOnce({ results: undefined, fields: [] });
+      await expect(repository.emailConfirmationStatus('1', 'alias@example.test')).resolves.toBe('missing');
+    });
+
+    it('confirms the email, claims invitations and removes unconfirmed copies on other accounts', async () => {
+      const repository = new UserStore(config as never);
+      queryTable
+        .mockResolvedValueOnce(rows({ id: 10, userId: 1, email: 'Alias@example.test' }, { id: 11, userId: 2 }, { id: 12, userId: 3 }))
+        .mockResolvedValueOnce(updated(1))
+        .mockResolvedValueOnce(updated(2))
+        .mockResolvedValueOnce(updated(1))
+        .mockResolvedValueOnce(updated(2));
+
+      await expect(repository.confirmEmail('1', 'alias@example.test')).resolves.toBe('confirmed');
+
+      const calls = queryTable.mock.calls.map(([, sql, values]) => [sql.replace(/\s+/g, ' ').trim(), values]);
+      expect(calls[1]).toEqual([
+        'UPDATE user_emails SET isConfirmed = 1, modifiedById = ?, modified = CURRENT_TIMESTAMP WHERE id = ? AND userId = ?',
+        ['1', 10, '1'],
+      ]);
+      expect(calls[2]).toEqual(['UPDATE template_collaborators SET userId = ? WHERE email = ?', [1, 'Alias@example.test']]);
+      expect(calls[3]).toEqual(['UPDATE project_collaborators SET userId = ? WHERE email = ?', [1, 'Alias@example.test']]);
+      expect(calls[4]).toEqual([
+        'DELETE FROM user_emails WHERE id IN (?, ?) AND isPrimary = 0 AND isConfirmed = 0',
+        [11, 12],
+      ]);
+    });
+
+    it('does not delete anything when no other account added the email', async () => {
+      const repository = new UserStore(config as never);
+      queryTable
+        .mockResolvedValueOnce(rows({ id: 10, userId: 1 }))
+        .mockResolvedValueOnce(updated(1))
+        .mockResolvedValueOnce(updated(0))
+        .mockResolvedValueOnce(updated(0));
+
+      await expect(repository.confirmEmail('1', 'alias@example.test')).resolves.toBe('confirmed');
+      expect(queryTable).toHaveBeenCalledTimes(4);
+      expect(queryTable.mock.calls.some(([, sql]) => sql.includes('DELETE'))).toBe(false);
+    });
+
+    it('does not confirm an email the user has not added', async () => {
+      const repository = new UserStore(config as never);
+      queryTable.mockResolvedValueOnce(rows({ id: 11, userId: 2 }));
+
+      await expect(repository.confirmEmail('1', 'alias@example.test')).resolves.toBe('notFound');
+      expect(queryTable).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not confirm an email that another account owns', async () => {
+      const repository = new UserStore(config as never);
+      queryTable.mockResolvedValueOnce(rows({ id: 10, userId: 1 }, { id: 11, userId: 2, isPrimary: 1 }));
+      await expect(repository.confirmEmail('1', 'alias@example.test')).resolves.toBe('claimedByOther');
+
+      queryTable.mockResolvedValueOnce(rows({ id: 10, userId: 1 }, { id: 11, userId: 2, isConfirmed: 1 }));
+      await expect(repository.confirmEmail('1', 'alias@example.test')).resolves.toBe('claimedByOther');
+      expect(queryTable).toHaveBeenCalledTimes(2);
+    });
+
+    it('reports notFound and claims nothing when the update does not change a row', async () => {
+      const repository = new UserStore(config as never);
+      queryTable
+        .mockResolvedValueOnce(rows({ id: 10, userId: 1 }))
+        .mockResolvedValueOnce(updated(0));
+      await expect(repository.confirmEmail('1', 'alias@example.test')).resolves.toBe('notFound');
+
+      queryTable
+        .mockResolvedValueOnce(rows({ id: 10, userId: 1 }))
+        .mockResolvedValueOnce({ results: [], fields: [] });
+      await expect(repository.confirmEmail('1', 'alias@example.test')).resolves.toBe('notFound');
+
+      queryTable
+        .mockResolvedValueOnce(rows({ id: 10, userId: 1 }))
+        .mockResolvedValueOnce({ results: undefined, fields: [] });
+      await expect(repository.confirmEmail('1', 'alias@example.test')).resolves.toBe('notFound');
+      expect(queryTable).toHaveBeenCalledTimes(6);
+    });
+  });
 });

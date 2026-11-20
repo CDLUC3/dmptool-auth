@@ -8,7 +8,12 @@ jest.unstable_mockModule('nodemailer', () => ({
   default: { createTransport },
 }));
 
-const { initializeEmailTransporter, sendAccountLockedEmail, sendResetPasswordEmail } = await import('../email.js');
+const {
+  initializeEmailTransporter,
+  sendAccountLockedEmail,
+  sendEmailConfirmationEmail,
+  sendResetPasswordEmail,
+} = await import('../email.js');
 
 const environment = { ...process.env };
 const logger = {
@@ -28,7 +33,9 @@ const config: Config = {
   helpDeskAddress: 'help@example.test',
   helpPageUrl: 'https://app.example.test/help',
   doNotReplyAddress: 'no-reply@example.test',
+  maxFailedSignInAttempts: 5,
   issuer: 'https://auth.example.test',
+  oidcApiResourceUri: 'https://api.example.test',
   audienceAPI: 'my-api',
   audienceUI: 'my-ui',
   tokens: {
@@ -54,6 +61,7 @@ const config: Config = {
   ttl: {
     csrf: 3600,
     passwordReset: 7200,
+    emailConfirmation: 86400,
     uiAccess: 900,
     uiRefresh: 604800,
     oidcCode: 120,
@@ -62,6 +70,8 @@ const config: Config = {
     oidcGrant: 120,
     oidcIdToken: 600,
     oidcInteraction: 600,
+    oidcClientCredentialsToken: 3600,
+    uiPendingSSOSignup: 600,
   },
   ses: {
     region: 'us-west-2',
@@ -101,6 +111,80 @@ describe('email service', () => {
     }));
   });
 
+  it('should send an email confirmation email with the confirmation link', async () => {
+    process.env.NODE_ENV = 'production';
+
+    await expect(sendEmailConfirmationEmail(config, emailer, '42', 'alias@example.test', 'abc_123-XYZ'))
+      .resolves.toBe(true);
+
+    expect(sendMail).toHaveBeenCalledWith(expect.objectContaining({
+      to: 'alias@example.test',
+      subject: 'DMP Tool - Please confirm your email address',
+      html: expect.stringContaining('href="https://app.example.test/email/confirm-email/abc_123-XYZ"'),
+    }));
+    const html = sendMail.mock.calls[0]?.[0]?.html ?? '';
+    expect(html).toContain('We received a request to add alias@example.test as an email address on a DMP Tool account.');
+    expect(html).toContain('>Confirm this email address</a>');
+    expect(html).toContain('This link works once and expires in 24 hours.');
+    expect(html).toContain('If it expires, you can send a new one from your DMP Tool profile page.');
+    // An unconfirmed alias can't be used to sign in yet, so the email says which address to sign in with
+    expect(html).toContain(
+      'use the email address you currently sign in with, not alias@example.test. Then select "Confirm."',
+    );
+    expect(html).toContain("This address won't be added to any account unless the link is used to confirm it.");
+    expect(html).toContain('<a href="mailto:help@example.test">help@example.test</a>');
+    expect(html).toContain('<a href="https://app.example.test/help">Help Page</a>');
+  });
+
+  it('should escape the email address and token in the email confirmation email', async () => {
+    process.env.NODE_ENV = 'production';
+
+    await sendEmailConfirmationEmail(
+      { ...config, ttl: { ...config.ttl, emailConfirmation: 3600 } },
+      emailer,
+      '42',
+      '"<b>x</b>"@example.test',
+      'a/b?c',
+    );
+
+    const html = sendMail.mock.calls[0]?.[0]?.html ?? '';
+    const escaped = '&quot;&lt;b&gt;x&lt;/b&gt;&quot;@example.test';
+    // The address appears in both the intro and the sign-in paragraphs, and must be escaped in each
+    expect(html).toContain(`We received a request to add ${escaped} as an email address`);
+    expect(html).toContain(`not ${escaped}. Then select "Confirm."`);
+    expect(html).not.toContain('<b>x</b>');
+    expect(html).toContain('/email/confirm-email/a%2Fb%3Fc');
+    expect(html).toContain('This link works once and expires in 1 hour.');
+  });
+
+  it('should build the confirmation link from the base URL in config.domain', async () => {
+    process.env.NODE_ENV = 'production';
+    await sendEmailConfirmationEmail({ ...config, domain: 'http://localhost:3000' }, emailer, '42', 'a@example.test', 't');
+
+    expect(sendMail.mock.calls[0]?.[0]?.html).toContain('href="http://localhost:3000/email/confirm-email/t"');
+  });
+
+  it('should use an http confirmation link and logs the email instead of sending it in development', async () => {
+    process.env.NODE_ENV = 'development';
+
+    await expect(sendEmailConfirmationEmail(
+      { ...config, env: 'development', domain: 'http://app.example.test' }, emailer, '42', 'alias@example.test', 'token',
+    ))
+      .resolves.toBe(true);
+
+    expect(sendMail).not.toHaveBeenCalled();
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('href="http://app.example.test/email/confirm-email/token"') }),
+      expect.stringContaining("Logging email notification of type 'EmailConfirmation'"),
+    );
+  });
+
+  it('should not send an email confirmation email without an email address', async () => {
+    await expect(sendEmailConfirmationEmail(config, emailer, '42', '', 'token')).resolves.toBe(false);
+    expect(sendMail).not.toHaveBeenCalled();
+    expect(logger.error).toHaveBeenCalledWith({ userId: '42' }, expect.stringContaining('No email address'));
+  });
+
   it('sends a reset email with the tokenized reset link outside development', async () => {
     process.env.NODE_ENV = 'production';
 
@@ -111,8 +195,15 @@ describe('email service', () => {
       replyTo: 'help@example.test',
       to: 'alice@example.test',
       subject: 'DMP Tool - Reset Your Password',
-      html: expect.stringContaining('https://app.example.test/login/reset-password?token=reset-token'),
+      html: expect.stringContaining('href="https://app.example.test/login/reset-password?token=reset-token"'),
     }));
+  });
+
+  it('should build the reset link from the base URL in config.domain and encode the token', async () => {
+    process.env.NODE_ENV = 'production';
+    await sendResetPasswordEmail({ ...config, domain: 'http://localhost:3000' }, emailer, 'a@example.test', 'a+b/c');
+
+    expect(sendMail.mock.calls[0]?.[0]?.html).toContain('href="http://localhost:3000/login/reset-password?token=a%2Bb%2Fc"');
   });
 
   it('accepts SMTP responses without a message ID', async () => {

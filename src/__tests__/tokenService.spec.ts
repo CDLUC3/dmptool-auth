@@ -70,6 +70,7 @@ const config: Config = {
     uiAccess: 900,
     uiRefresh: 60 * 60 * 24 * 30,
     passwordReset: 60 * 60 * 2,
+    emailConfirmation: 60 * 60 * 24,
     oidcCode: 600,
     oidcAccess: 900,
     oidcRefresh: 60 * 60 * 24 * 30,
@@ -206,5 +207,80 @@ describe('TokenService', () => {
     await expect(service.passwordResetUserId(token)).resolves.toBe('user-1');
     await service.deletePasswordResetToken(token);
     await expect(service.passwordResetUserId(token)).resolves.toBeUndefined();
+  });
+
+  it('stores email confirmation tokens by hash with the configured TTL', async () => {
+    const cache = new MockValkeyCache();
+    const keys = await KeyStore.load(config);
+    const service = new TokenService(cache, keys, 900, 60, 60, 900, 777);
+
+    const token = await service.issueEmailConfirmationToken('user-1', 'alias@example.test');
+
+    expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    const storedKeys = cache.set.mock.calls.map(([key]) => key);
+    expect(storedKeys.some((key) => key.includes(token))).toBe(false);
+    expect(cache.set).toHaveBeenCalledWith(
+      expect.stringMatching(/^auth:email-confirmation:[0-9a-f]{64}$/),
+      JSON.stringify({ userId: 'user-1', email: 'alias@example.test' }),
+      777,
+    );
+    expect(cache.set).toHaveBeenCalledWith(
+      expect.stringMatching(/^auth:email-confirmation-owner:[0-9a-f]{64}$/),
+      expect.stringMatching(/^[0-9a-f]{64}$/),
+      777,
+    );
+  });
+
+  it('defaults email confirmation tokens to a 24 hour TTL', async () => {
+    const cache = new MockValkeyCache();
+    const keys = await KeyStore.load(config);
+    const service = new TokenService(cache, keys);
+
+    await service.issueEmailConfirmationToken('user-1', 'alias@example.test');
+
+    expect(cache.set).toHaveBeenCalledWith(expect.stringMatching(/^auth:email-confirmation:/), expect.any(String), 86_400);
+  });
+
+  it('reads email confirmation tokens without using them up, then uses them up only once', async () => {
+    const cache = new MockValkeyCache();
+    const keys = await KeyStore.load(config);
+    const service = new TokenService(cache, keys);
+    const token = await service.issueEmailConfirmationToken('user-1', 'alias@example.test');
+    const claim = { userId: 'user-1', email: 'alias@example.test' };
+
+    await expect(service.emailConfirmationClaim(token)).resolves.toEqual(claim);
+    await expect(service.emailConfirmationClaim(token)).resolves.toEqual(claim);
+    await expect(service.consumeEmailConfirmationToken(token)).resolves.toEqual(claim);
+    await expect(service.consumeEmailConfirmationToken(token)).resolves.toBeUndefined();
+    await expect(service.emailConfirmationClaim(token)).resolves.toBeUndefined();
+    await expect(service.emailConfirmationClaim('unknown-token')).resolves.toBeUndefined();
+  });
+
+  it('replaces an earlier email confirmation token when a new one is issued', async () => {
+    const cache = new MockValkeyCache();
+    const keys = await KeyStore.load(config);
+    const service = new TokenService(cache, keys);
+    const first = await service.issueEmailConfirmationToken('user-1', 'alias@example.test');
+    const other = await service.issueEmailConfirmationToken('user-2', 'alias@example.test');
+    const second = await service.issueEmailConfirmationToken('user-1', ' Alias@Example.test ');
+
+    await expect(service.emailConfirmationClaim(first)).resolves.toBeUndefined();
+    await expect(service.emailConfirmationClaim(second)).resolves.toMatchObject({ userId: 'user-1' });
+    // Tokens issued to another user for the same address are not affected
+    await expect(service.emailConfirmationClaim(other)).resolves.toMatchObject({ userId: 'user-2' });
+  });
+
+  it('expires and deletes email confirmation tokens', async () => {
+    const cache = new MockValkeyCache();
+    const keys = await KeyStore.load(config);
+    const expiring = new TokenService(cache, keys, 900, 60, 60, 900, 0);
+    const expired = await expiring.issueEmailConfirmationToken('user-1', 'alias@example.test');
+    await expect(expiring.emailConfirmationClaim(expired)).resolves.toBeUndefined();
+
+    const service = new TokenService(cache, keys);
+    const token = await service.issueEmailConfirmationToken('user-1', 'alias@example.test');
+    await service.deleteEmailConfirmationToken(token);
+    await expect(service.emailConfirmationClaim(token)).resolves.toBeUndefined();
+    await expect(service.deleteEmailConfirmationToken(token)).resolves.toBeUndefined();
   });
 });

@@ -1,6 +1,10 @@
 # dmptool-auth CHANGELOG
 
 ## v1.0.2
+- Added `POST /email-confirmation/token` and `POST /email-confirmation/confirm` so users can confirm alias email addresses they added to their account. Confirming an email claims open template and project invitations sent to it and removes unconfirmed copies on other accounts. The confirmation email tells the user to sign in with the email they normally use, not the one being confirmed [#106]
+- Added an optional `returnTo` param to `/sso/passthru`. It is carried through the SSO provider to `/sso/callback`, which sends a signed-in user back to that path instead of `/` (only paths on the UI's own site are accepted) [#106]
+- Added `EMAIL_CONFIRMATION_TOKEN_TTL` environment variable (default `43200`, 12 hours) to configure the lifetime of email confirmation tokens [#106]
+- Updated `DOMAIN` handling: it is now checked and turned into the UI's base URL when the config loads, so a malformed value stops the service at startup instead of breaking password reset and email confirmation links. The link protocol is set by `NODE_ENV` (`http` in development and test, `https` otherwise), and a `DOMAIN` with a path, query string or fragment is rejected [#106]
 - Added `X-Requested-With` header to support Swagger preflight checks
 - Added `OIDC_API_RESOURCE_URI` ENV variable to identify the Location of the REST API
 - Added a separate absolute API resource URI setting for OAuth resource indicators `OIDC_API_RESOURCE_URI`.

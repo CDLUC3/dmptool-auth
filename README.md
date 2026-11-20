@@ -1,6 +1,6 @@
 # DMP Tool Auth Service
 
-The DMP Tool Auth Service provides email/password authentication, institutional SSO through a Shibboleth SP, and OAuth 2.0/OpenID Connect (OIDC) authorization-code flows. It persists users, signing keys, OAuth clients, and OIDC records in MySQL; Valkey holds short-lived CSRF, refresh-token, SSO-handoff, password-reset, and revocation state.
+The DMP Tool Auth Service provides email/password authentication, institutional SSO through a Shibboleth SP, and OAuth 2.0/OpenID Connect (OIDC) authorization-code flows. It persists users, signing keys, OAuth clients, and OIDC records in MySQL; Valkey holds short-lived CSRF, refresh-token, SSO-handoff, password-reset, email-confirmation, and revocation state.
 
 Browser authentication issues an RS256 access-token cookie and a refresh-token cookie. Their names default to `access_token` and `refresh_token` and can be changed with `ACCESS_TOKEN_NAME` and `REFRESH_TOKEN_NAME`.
 
@@ -32,10 +32,12 @@ All routes are rooted at `ISSUER`. Routes marked **CSRF** require a valid `X-CSR
 | `POST` | `/password-reset/verify` | Checks whether body field `token` is valid without consuming it; returns `{ "valid": boolean }`. |
 | `POST` | `/password-reset` | Consumes `token`, `password`, and `passwordConfirmation` to reset a password. |
 | `POST` | `/change-password` **CSRF** | Requires a valid access-token cookie; verifies `currentPassword` and applies `newPassword` and `newPasswordConfirmation`. |
+| `POST` | `/email-confirmation/token` **CSRF** | Requires a valid access-token cookie. Emails a one-time confirmation link for body field `email`, which must be an unconfirmed address on the signed-in user's account that no other account uses as its primary email or has confirmed. Returns `201`; the token is only sent by email, never returned. A new link replaces the previous one. |
+| `POST` | `/email-confirmation/confirm` **CSRF** | Requires a valid access-token cookie. Consumes body field `token`, marks the email confirmed, claims open template and project invitations sent to it, and removes unconfirmed copies on other accounts. Returns `{ "email" }`, or `reason` `invalid` (`400`), `wrongAccount` (`403`, the token is left unused) or `claimedByOther` (`409`). |
 | `GET` | `/revocations/:jti` | Reports whether an access-token JTI has been revoked. |
 | `GET`, `POST` | `/sso-check` | Looks up the supplied email domain's configured SSO entity ID. Returns the email and entity ID when SSO is available, or `404` when it is not. |
-| `GET`, `POST` | `/sso`, `/sso/passthru` | Requires `email` and `entityId`; redirects the browser to the local Shibboleth SP login endpoint. |
-| `GET`, `POST` | `/sso/callback`, `/sso/callback/:id` | Accepts only requests from the trusted Shibboleth proxy. An asserted SSO identity signs in its linked account. A valid browser access-token cookie can link an unlinked asserted identity to that account. Otherwise, an unlinked identity receives a short-lived SSO handoff cookie and is redirected to `/signup`. |
+| `GET`, `POST` | `/sso`, `/sso/passthru` | Requires `email` and `entityId`; redirects the browser to the local Shibboleth SP login endpoint. An optional `returnTo` path on the UI's site is passed on to `/sso/callback`. |
+| `GET`, `POST` | `/sso/callback`, `/sso/callback/:id` | Accepts only requests from the trusted Shibboleth proxy. An asserted SSO identity signs in its linked account and is redirected to `returnTo` (if it is a path on the UI's site) or `/`. A valid browser access-token cookie can link an unlinked asserted identity to that account. Otherwise, an unlinked identity receives a short-lived SSO handoff cookie and is redirected to `/signup`. |
 | `GET` | `/interaction/:uid` | Returns the pending OIDC interaction's UID, prompt, client ID, and parameters. |
 | `POST` | `/interaction/:uid` | Completes an OIDC `login` interaction with `email` and `password`, or completes the pending `consent` interaction. |
 | `GET` | `/jwks.json` | Legacy redirect to `/.well-known/jwks.json`. |
@@ -115,7 +117,7 @@ sequenceDiagram
 
 ## Browser authentication and SSO
 
-Public signup always assigns the `RESEARCHER` role; an administrator must promote users separately. Password reset tokens expire after `PASSWORD_RESET_TOKEN_TTL`. SSO account linking requires both a valid browser access token for the existing account and a trusted SSO assertion. The asserted email does not need to match the account's preferred email.
+Public signup always assigns the `RESEARCHER` role; an administrator must promote users separately. Password reset tokens expire after `PASSWORD_RESET_TOKEN_TTL`. Email confirmation tokens expire after `EMAIL_CONFIRMATION_TOKEN_TTL` and are stored in Valkey by their SHA-256 hash. SSO account linking requires both a valid browser access token for the existing account and a trusted SSO assertion. The asserted email does not need to match the account's preferred email.
 
 ```mermaid
 sequenceDiagram
@@ -189,7 +191,7 @@ The service reads all configuration from environment variables and AWS SSM Param
 | `AUDIENCE_UI` | Yes | `my-ui` | The audience name to use for the UI access token. |
 | `AUDIENCE_API` | Yes | `my-api` | The JWT audience claim for API access tokens. |
 | `OIDC_API_RESOURCE_URI` | No | `http://localhost:4060` | Absolute URI used as the OAuth resource indicator for API access tokens. This is distinct from `AUDIENCE_API`; pass this URI as the `resource` parameter if selecting it explicitly. |
-| `DOMAIN` | No | `localhost` | Public application domain used by service integrations. |
+| `DOMAIN` | No | `localhost` | Host (and optional port) of the UI, used to build links in emails, e.g. `localhost:3000` or `https://dmptool.org`. The protocol is set by `NODE_ENV` (`http` in development and test, `https` otherwise). The service won't start if the value is malformed or includes a path. |
 | `APPLICATION_NAME` | No | `my app` | Application name used in email content. |
 | `HELP_DESK_ADDRESS` | No | `help@example.com` | Help-desk address used in email content. |
 | `HELP_HOST` | No | `localhost` | Help-page URL used in email content. |
@@ -220,6 +222,7 @@ The service reads all configuration from environment variables and AWS SSM Param
 | `UI_REFRESH_TOKEN_TTL` | No | `604800` | Browser refresh-token lifetime. |
 | `UI_PENDING_SSO_SIGNUP_TOKEN_TTL` | No | `600` | Pending SSO signup-handoff lifetime. |
 | `PASSWORD_RESET_TOKEN_TTL` | No | `7200` | Password-reset token lifetime. |
+| `EMAIL_CONFIRMATION_TOKEN_TTL` | No | `43200` | Email confirmation token lifetime (12 hours). |
 | `SHIBBOLETH_PROXY_SECRET` | **Yes when SSO is enabled** | none | Shared secret expected in `X-Shib-Proxy-Secret`. Without it, SSO callbacks return `401`. The proxy must remove externally supplied `X-Shib-*` and `X-Shib-Proxy-Secret` headers. |
 | `OAUTH2_SIGN_IN_URL` | No | none | UI URL to which OIDC interactions are redirected with `uid`; without it, interactions use `/interaction/:uid`. |
 | `OIDC_CLIENTS_JSON` | Bootstrap only | `[]` | Valid JSON array of static OAuth client objects. Used only if MySQL has no active client registrations. |

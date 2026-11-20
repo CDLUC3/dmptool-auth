@@ -16,7 +16,7 @@ import type { Config, OAuthClient, SesConnectionParams } from "./types.js";
  * @returns The SSM connection parameters
  */
 const getSSMConfig = async (
-    logger: Logger,
+  logger: Logger,
 ): Promise<SsmConnectionParams | undefined> => {
   // If running locally, the SSM_ENDPOINT variable will be set
   return {
@@ -28,8 +28,8 @@ const getSSMConfig = async (
 }
 
 const getSESConfig = async (
-    ssmConfig: SsmConnectionParams,
-    env: EnvironmentEnum = EnvironmentEnum.DEV
+  ssmConfig: SsmConnectionParams,
+  env: EnvironmentEnum = EnvironmentEnum.DEV
 ): Promise<SesConnectionParams | undefined> => {
   const inDevMode: boolean = ['development', 'test'].includes(process.env.NODE_ENV || 'development');
   const sesAccessKey: string | undefined = inDevMode ? 'DUMMY_KEY' : await getSSMParameter(ssmConfig, 'SesAccessKeyId', env);
@@ -61,8 +61,8 @@ const getSESConfig = async (
  * @returns the RDS connection parameters
  */
 const getMySQLConfig = async (
-    ssmConfig: SsmConnectionParams,
-    env: EnvironmentEnum = EnvironmentEnum.DEV
+  ssmConfig: SsmConnectionParams,
+  env: EnvironmentEnum = EnvironmentEnum.DEV
 ): Promise<ConnectionParams | undefined> => {
   const rdsUser: string | undefined = await getSSMParameter(ssmConfig, 'RdsUsername', env);
   const rdsPassword: string | undefined = await getSSMParameter(ssmConfig, 'RdsPassword', env);
@@ -120,6 +120,30 @@ const requiredUrl = (name: string, fallback?: string): string => {
 };
 
 /**
+ * Builds the base URL of the UI from DOMAIN. A protocol is added when DOMAIN doesn't have one, and the
+ * protocol is then set from the env (http in development and test, https everywhere else).
+ *
+ * @param domain the DOMAIN value, with or without a protocol (e.g. `localhost:3000` or `https://dmptool.org`)
+ * @param env the NODE_ENV the app is running in
+ * @returns the base URL (protocol, host and port) without a trailing slash
+ * @throws if DOMAIN is not a valid host, or if it includes a path, query string or fragment
+ */
+export const appBaseUrl = (domain: string, env: string): string => {
+  const withProtocol: string = /^https?:\/\//i.test(domain) ? domain : `https://${domain}`;
+  let url: URL;
+  try {
+    url = new URL(withProtocol);
+  } catch (error) {
+    throw new Error(`DOMAIN must be a valid host or URL: ${toErrorMessage(error)}`, { cause: error });
+  }
+  if (!url.hostname || url.pathname !== '/' || url.search || url.hash) {
+    throw new Error('DOMAIN must be a host (and optional port) without a path, query string or fragment');
+  }
+  url.protocol = ['development', 'test'].includes(env) ? 'http:' : 'https:';
+  return url.origin;
+};
+
+/**
  * Loads the configuration from environment variables.
  *
  * @returns the configuration object
@@ -140,8 +164,8 @@ export const loadConfig = async (logger: Logger): Promise<Config> => {
   }
 
   const env: EnvironmentEnum = process.env.DEPLOYMENT_ENV
-      ? EnvironmentEnum[process.env.DEPLOYMENT_ENV as keyof typeof EnvironmentEnum]
-      : EnvironmentEnum.DEV;
+    ? EnvironmentEnum[process.env.DEPLOYMENT_ENV as keyof typeof EnvironmentEnum]
+    : EnvironmentEnum.DEV;
 
   const ssmConfig: SsmConnectionParams | undefined = await getSSMConfig(logger);
   if (!ssmConfig) {
@@ -162,6 +186,9 @@ export const loadConfig = async (logger: Logger): Promise<Config> => {
   const audienceUI: string = process.env.AUDIENCE_UI || 'my-ui';
   const audienceAPI: string = process.env.AUDIENCE_API || 'my-api';
 
+  const nodeEnv: string = process.env.NODE_ENV ?? 'development';
+  const domain: string = appBaseUrl(process.env.DOMAIN ?? 'localhost', nodeEnv);
+
   const cookieSecure = process.env.COOKIE_SECURE === 'true';
   if (process.env.NODE_ENV === 'production') {
     if (new URL(issuer).protocol !== 'https:') {
@@ -173,19 +200,19 @@ export const loadConfig = async (logger: Logger): Promise<Config> => {
   }
 
   return {
-    env: process.env.NODE_ENV ?? 'development',
+    env: nodeEnv,
     logger,
     port: Number.parseInt(process.env.PORT ?? '3000', 10),
 
-    domain: process.env.DOMAIN ?? 'localhost',
+    domain,
     applicationName: process.env.APPLICATION_NAME ?? 'my app',
     helpDeskAddress: process.env.HELP_DESK_ADDRESS ?? 'help@example.com',
     helpPageUrl: process.env.HELP_HOST ?? 'localhost',
     doNotReplyAddress: process.env.DO_NOT_REPLY_ADDRESS ?? 'no-reply@example.com',
 
     maxFailedSignInAttempts: process.env.MAX_FAILED_SIGNIN_ATTEMPTS ?
-        Number.parseInt(process.env.MAX_FAILED_SIGNIN_ATTEMPTS, 10)
-        : 5,
+      Number.parseInt(process.env.MAX_FAILED_SIGNIN_ATTEMPTS, 10)
+      : 5,
 
     database: mysqlConfig,
     cache: cacheConfig,
@@ -213,6 +240,7 @@ export const loadConfig = async (logger: Logger): Promise<Config> => {
     ttl: {
       csrf: Number.parseInt(process.env.CSRF_TTL ?? '3600', 10),
       passwordReset: Number.parseInt(process.env.PASSWORD_RESET_TOKEN_TTL ?? '7200', 10),
+      emailConfirmation: Number.parseInt(process.env.EMAIL_CONFIRMATION_TOKEN_TTL ?? '43200', 10),
 
       uiAccess: Number.parseInt(process.env.UI_ACCESS_TOKEN_TTL ?? '900', 10),
       uiRefresh: Number.parseInt(process.env.UI_REFRESH_TOKEN_TTL ?? '604800', 10),

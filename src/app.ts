@@ -5,7 +5,7 @@ import cookieParser from 'cookie-parser';
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import type { Grant, Interaction, Provider, UnknownObject } from 'oidc-provider';
 import type { CacheInterface } from './cache.js';
-import type { AuthTokens, TokenService } from './tokenService.js';
+import type { AuthTokens, EmailConfirmationClaim, TokenService } from './tokenService.js';
 import type {
   Config,
   PendingSSOSignupClaim,
@@ -15,10 +15,11 @@ import type {
   SsoEntityRow,
   TokenClaims
 } from './types.js';
-import type { SignupAttempt, UserStore } from './models/userStore.js';
+import type { ConfirmEmailResult, EmailConfirmationStatus, SignupAttempt, UserStore } from './models/userStore.js';
 import type { KeyStore } from './models/keyStore.js';
 import type { Mail, SMTPSentMessageInfo } from "nodemailer";
-import { sendAccountLockedEmail, sendResetPasswordEmail } from "./email.js";
+import { sendAccountLockedEmail, sendEmailConfirmationEmail, sendResetPasswordEmail } from "./email.js";
+import { normalizeEmail } from './utils.js';
 
 interface Dependencies {
   config: Config;
@@ -60,7 +61,30 @@ const hasTrustedShibbolethProxy = (headers: Request['headers'], secret: string |
 const stringArray = (value: unknown): string[] =>
   Array.isArray(value) && value.every((item): item is string => typeof item === 'string') ? value : [];
 
-const normalizeEmail = (email: string): string => email.trim().toLowerCase();
+/**
+ * Returns the given value only if it is a path on the UI's own site (e.g. `/email/confirm-email/abc`), so that a
+ * `returnTo` value can't be used to send users to another website after they sign in.
+ *
+ * @param value the requested return path
+ * @returns the path, or undefined if it is missing or not a path on this site
+ */
+export const safeReturnTo = (value: unknown): string | undefined => {
+  if (typeof value !== 'string' || value.length > 2048) return undefined;
+  // Must start with a single "/". "//host" and "/\\host" are read by browsers as links to another site
+  if (!value.startsWith('/') || value.startsWith('//') || value.includes('\\')) return undefined;
+  // Rejects any "returnTo" value containing a control character, which could be used to inject headers or other
+  // malicious content
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f]/.test(value)) return undefined;
+  // A placeholder path so that we can parse the path with "new URL()" and check that the origin is the same as the placeholder
+  const base = 'http://return-to.invalid';
+  const parsed = new URL(value, base);
+  // parsed.search is the query string. parsed.hash is the fragment #.
+  const path = `${parsed.pathname}${parsed.search}${parsed.hash}`;
+  // Check the parsed path too: dot segments can collapse it into "//host" (e.g. "/..//evil.com" becomes
+  // "//evil.com"), which browsers read as a link to another site
+  return parsed.origin === base && !path.startsWith('//') ? path : undefined;
+};
 
 /**
  * Write the access and refresh tokens to the response cookies.
@@ -220,7 +244,8 @@ export const createApp = (
    * @returns A response with a status of 403 if the CSRF token is invalid, or calls the next middleware function if valid
    */
   app.use(async (request: Request, response: Response, next: NextFunction): Promise<void> => {
-    if (!['/sign-up', '/sign-in', '/refresh-token', '/sign-out', '/password-reset/token', '/change-password', '/sso/link'].includes(request.path)
+    if (!['/sign-up', '/sign-in', '/refresh-token', '/sign-out', '/password-reset/token', '/change-password', '/sso/link',
+      '/email-confirmation/token', '/email-confirmation/confirm'].includes(request.path)
       || ['GET', 'HEAD', 'OPTIONS'].includes(request.method)) {
       next();
       return;
@@ -269,7 +294,7 @@ export const createApp = (
         response.status(400).json({ success: false, message: 'jti must be a string' });
         return;
       }
-      config.logger.debug({ jti}, 'Revocations - received request');
+      config.logger.debug({ jti }, 'Revocations - received request');
       response.status(200).json({ revoked: await tokens.isRevoked(jti) });
     } catch (error) {
       next(error);
@@ -306,8 +331,8 @@ export const createApp = (
       const affiliationId: string | undefined = body.affiliationId || assertion?.affiliation;
       const otherAffiliationName: string | undefined = body.otherAffiliationName;
       const acceptedTerms: boolean = typeof body.acceptedTerms === 'string'
-          ? ['1', 'true', 'yes'].includes(body.acceptedTerms.toLowerCase())
-          : Boolean(body.acceptedTerms);
+        ? ['1', 'true', 'yes'].includes(body.acceptedTerms.toLowerCase())
+        : Boolean(body.acceptedTerms);
       const languageId: string | undefined = body.languageId;
       const ssoId: string | undefined = assertion?.uid;
       // If the user is signing up with an SSO assertion, we will allow them to claim any open
@@ -637,6 +662,140 @@ export const createApp = (
   });
 
   /**
+   * Return the claims of the signed-in user's access token, or undefined if there is no valid access token.
+   *
+   * @param request The Express request object
+   * @returns The access token claims
+   */
+  const signedInUser = async (request: Request): Promise<TokenClaims | undefined> => {
+    const accessToken = request.cookies[config.tokens.access] as string | undefined;
+    return accessToken ? await tokens.verifyAccessToken(accessToken) : undefined;
+  };
+
+  /**
+   * Send an email with a link that confirms the signed-in user owns an email address they added to their account.
+   * The token is only ever sent to the email address. It is never returned to the caller.
+   *
+   * @route POST /email-confirmation/token
+   * @param request The Express request object. The body must include the `email` to confirm
+   * @param response The Express response object
+   * @param next The next middleware function in the stack
+   * @returns A JSON response indicating the success or failure of the operation. A 409 includes a `reason` of
+   * `alreadyConfirmed` or `claimedByOther` so callers don't need to rely on the message text
+   */
+  app.post('/email-confirmation/token', nocache, async (request: Request, response: Response, next: NextFunction): Promise<void> => {
+    try {
+      const claims: TokenClaims | undefined = await signedInUser(request);
+      if (!claims) {
+        response.status(401).json({ success: false, message: 'Invalid access token' });
+        return;
+      }
+      const email = (request.body as Record<string, unknown> | undefined)?.email;
+      if (typeof email !== 'string' || email.trim() === '') {
+        response.status(400).json({ success: false, message: 'Email is required' });
+        return;
+      }
+
+      const userId = String(claims.id);
+      const status: EmailConfirmationStatus = await users.emailConfirmationStatus(userId, email);
+      if (status === 'missing') {
+        response.status(404).json({ success: false, message: 'Email not found for this account' });
+        return;
+      }
+      if (status === 'confirmed') {
+        response.status(409).json({ success: false, reason: 'alreadyConfirmed', message: 'Email is already confirmed' });
+        return;
+      }
+      if (status === 'claimedByOther') {
+        response.status(409).json({
+          success: false,
+          reason: 'claimedByOther',
+          message: 'Email has already been confirmed by another account',
+        });
+        return;
+      }
+
+      const token: string = await tokens.issueEmailConfirmationToken(userId, normalizeEmail(email));
+      const delivered: boolean = await sendEmailConfirmationEmail(config, emailer, userId, email.trim(), token);
+      if (!delivered) {
+        await tokens.deleteEmailConfirmationToken(token);
+        response.status(502).json({ success: false, message: 'Unable to send email confirmation email' });
+        return;
+      }
+      response.status(201).json({ success: true, message: 'ok' });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /**
+   * Confirm an email address using the token from an email confirmation link. The token must have been issued
+   * to the signed-in user. If it was issued to a different account it is left unused, so the same link still
+   * works once the right account signs in.
+   *
+   * @route POST /email-confirmation/confirm
+   * @param request The Express request object. The body must include the `token` from the link
+   * @param response The Express response object
+   * @param next The next middleware function in the stack
+   * @returns A JSON response with the confirmed `email`, or a `reason` of `invalid`, `wrongAccount` or
+   * `claimedByOther` when the email could not be confirmed
+   */
+  app.post('/email-confirmation/confirm', nocache, async (request: Request, response: Response, next: NextFunction): Promise<void> => {
+    try {
+      const claims: TokenClaims | undefined = await signedInUser(request);
+      if (!claims) {
+        response.status(401).json({ success: false, message: 'Invalid access token' });
+        return;
+      }
+      const invalid = { success: false, reason: 'invalid', message: 'Invalid or expired email confirmation token' };
+      const raw = (request.body as Record<string, unknown> | undefined)?.token;
+      const token = typeof raw === 'string' ? raw.trim() : '';
+      if (token === '') {
+        response.status(400).json(invalid);
+        return;
+      }
+
+      // Check who the token belongs to before using it up, so that a wrong-account click doesn't burn the link
+      const pending: EmailConfirmationClaim | undefined = await tokens.emailConfirmationClaim(token);
+      if (!pending) {
+        response.status(400).json(invalid);
+        return;
+      }
+      if (pending.userId !== String(claims.id)) {
+        response.status(403).json({
+          success: false,
+          reason: 'wrongAccount',
+          message: 'This email confirmation link was sent for a different account',
+        });
+        return;
+      }
+
+      const consumed: EmailConfirmationClaim | undefined = await tokens.consumeEmailConfirmationToken(token);
+      if (!consumed) {
+        response.status(400).json(invalid);
+        return;
+      }
+
+      const result: ConfirmEmailResult = await users.confirmEmail(consumed.userId, consumed.email);
+      if (result === 'notFound') {
+        response.status(400).json(invalid);
+        return;
+      }
+      if (result === 'claimedByOther') {
+        response.status(409).json({
+          success: false,
+          reason: 'claimedByOther',
+          message: 'Email has already been confirmed by another account',
+        });
+        return;
+      }
+      response.status(200).json({ success: true, message: 'ok', email: consumed.email });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /**
    * Check if an email address is associated with an affiliation and if it supports SSO
    *
    * @route GET /sso-check
@@ -697,7 +856,7 @@ export const createApp = (
    */
   app.all(['/sso', '/sso/passthru'], nocache, async (request: Request, response: Response): Promise<void> => {
     const values: unknown = request.method === 'GET' ? request.query : request.body;
-    const { email, entityId } = values as Record<string, string>;
+    const { email, entityId, returnTo } = values as Record<string, string>;
     if (!email || !email.includes('@')) {
       config.logger.warn({ email, entityId }, 'SSO Passthru - invalid email');
       response.status(400).json({ success: false, message: 'Invalid email address' });
@@ -709,6 +868,9 @@ export const createApp = (
       return;
     }
     const target = new URL('/sso/callback', config.issuer);
+    // Carry the page the user should return to (e.g. the email confirmation page) through the SSO provider
+    const safeReturn: string | undefined = safeReturnTo(returnTo);
+    if (safeReturn) target.searchParams.set('returnTo', safeReturn);
     const queryString = `target=${encodeURIComponent(target.toString())}&entityID=${encodeURIComponent(entityId)}`;
     config.logger.debug({ email, entityId, target, queryString }, 'SSO Passthru - initiated');
     response.redirect(302, `/Shibboleth.sso/Login?${queryString}`);
@@ -721,8 +883,8 @@ export const createApp = (
    * @param request The Express request object
    * @param response The Express response object
    * @param next The next middleware function in the stack
-   * @returns A redirect response to the sign-up page if the user is not found, or a redirect to the home page
-   * if the user is authenticated
+   * @returns A redirect response to the sign-up page if the user is not found, or a redirect to the `returnTo`
+   * path (or the home page) if the user is authenticated
    */
   app.all(['/sso/callback', '/sso/callback/:id'], nocache, async (request: Request, response: Response, next: NextFunction): Promise<void> => {
     try {
@@ -820,15 +982,17 @@ export const createApp = (
       } else {
         // Record the successful login for the user and issue new access and refresh tokens
         await users.ssoLogin(user.id);
-        config.logger.debug({user}, 'SSO Callback - user authenticated');
+        config.logger.debug({ user }, 'SSO Callback - user authenticated');
         const issued: AuthTokens = await tokens.issue(config.audienceUI, user);
         writeTokens(response, issued, config);
 
         // If there is a valid access token, redirect to the user's profile because they were
-        // linking their account, otherwise return to the home page
+        // linking their account. Otherwise return to the page the user started from (e.g. the email
+        // confirmation page), or the home page
+        const returnTo: string = safeReturnTo(request.query.returnTo) ?? '/';
         response.status(302)
-            .location(accessClaim ? '/account/connections?linked=true' : '/')
-            .send();
+          .location(accessClaim ? '/account/connections?linked=true' : returnTo)
+          .send();
       }
     } catch (error) {
       next(error);
@@ -928,7 +1092,7 @@ export const createApp = (
           for (const [resource, scopes] of Object.entries(consentDetails.missingResourceScopes)) {
             const missingResourceScopes: string[] = stringArray(scopes);
             if (missingResourceScopes.length > 0) {
-                config.logger.debug({ details, resource, scopes }, 'OIDC interaction - adding resource scopes');
+              config.logger.debug({ details, resource, scopes }, 'OIDC interaction - adding resource scopes');
               grant.addResourceScope(resource, missingResourceScopes.join(' '));
             }
           }
