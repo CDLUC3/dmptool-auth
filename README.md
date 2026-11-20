@@ -191,7 +191,7 @@ The service reads all configuration from environment variables and AWS SSM Param
 | `AUDIENCE_UI` | Yes | `my-ui` | The audience name to use for the UI access token. |
 | `AUDIENCE_API` | Yes | `my-api` | The JWT audience claim for API access tokens. |
 | `OIDC_API_RESOURCE_URI` | No | `http://localhost:4060` | Absolute URI used as the OAuth resource indicator for API access tokens. This is distinct from `AUDIENCE_API`; pass this URI as the `resource` parameter if selecting it explicitly. |
-| `DOMAIN` | No | `localhost` | Public application domain used by service integrations. |
+| `DOMAIN` | No | `localhost` | Host (and optional port) of the UI, used to build links in emails, e.g. `localhost:3000` or `https://dmptool.org`. The protocol is set by `NODE_ENV` (`http` in development and test, `https` otherwise). The service won't start if the value is malformed or includes a path. |
 | `APPLICATION_NAME` | No | `my app` | Application name used in email content. |
 | `HELP_DESK_ADDRESS` | No | `help@example.com` | Help-desk address used in email content. |
 | `HELP_HOST` | No | `localhost` | Help-page URL used in email content. |

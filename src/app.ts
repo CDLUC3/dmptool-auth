@@ -748,8 +748,9 @@ export const createApp = (
         return;
       }
       const invalid = { success: false, reason: 'invalid', message: 'Invalid or expired email confirmation token' };
-      const token = (request.body as Record<string, unknown> | undefined)?.token;
-      if (typeof token !== 'string' || token === '') {
+      const raw = (request.body as Record<string, unknown> | undefined)?.token;
+      const token = typeof raw === 'string' ? raw.trim() : '';
+      if (token === '') {
         response.status(400).json(invalid);
         return;
       }

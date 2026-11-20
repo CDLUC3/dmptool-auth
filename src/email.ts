@@ -106,7 +106,7 @@ export const sendResetPasswordEmail = async (
     );
     return false;
   }
-  const resetPasswordUrl = `${appBaseUrl(config)}/login/reset-password?token=${encodeURIComponent(resetToken)}`;
+  const resetPasswordUrl = `${config.domain}/login/reset-password?token=${encodeURIComponent(resetToken)}`;
 
   const message = `
 <p>Hello ${userEmail},</p>
@@ -184,20 +184,6 @@ const escapeHtml = (value: string): string => value
   .replaceAll("'", '&#39;');
 
 /**
- * Return the base URL of the UI. DOMAIN usually includes the protocol already (e.g. http://localhost:3000),
- * so a protocol is only added when it is missing.
- *
- * @param config the configuration object containing the domain
- * @returns the base URL without a trailing slash
- */
-const appBaseUrl = (config: Config): string => {
-  if (/^https?:\/\//i.test(config.domain)) return config.domain.replace(/\/+$/, '');
-
-  const protocol = ['development', 'test'].includes(config.env) ? 'http://' : 'https://';
-  return `${protocol}${config.domain.replace(/\/+$/, '')}`;
-};
-
-/**
  * Sends an email asking the user to confirm that they own an email address they added to their account.
  *
  * @param config the configuration object containing email settings and logger
@@ -218,7 +204,7 @@ export const sendEmailConfirmationEmail = async (
     config.logger.error({ userId }, 'No email address was provided, so no email confirmation email was sent');
     return false;
   }
-  const confirmUrl = `${appBaseUrl(config)}/email/confirm-email/${encodeURIComponent(confirmationToken)}`;
+  const confirmUrl = `${config.domain}/email/confirm-email/${encodeURIComponent(confirmationToken)}`;
   const hours: number = Math.max(1, Math.round(config.ttl.emailConfirmation / 3600));
 
   const message = `

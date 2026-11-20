@@ -7,7 +7,7 @@ jest.unstable_mockModule('@dmptool/utils', () => ({
   getSSMParameter,
   toErrorMessage: (error: unknown) => error instanceof Error ? error.message : String(error),
 }));
-const { loadConfig } = await import('../config.js');
+const { appBaseUrl, loadConfig } = await import('../config.js');
 
 const logger = {
   fatal: jest.fn(),
@@ -30,6 +30,37 @@ beforeEach(() => {
 
 afterEach(() => {
   process.env = environment;
+});
+
+describe('appBaseUrl', () => {
+  it('adds a protocol to a bare host and keeps the port', () => {
+    expect(appBaseUrl('localhost', 'development')).toBe('http://localhost');
+    expect(appBaseUrl('localhost:3000', 'test')).toBe('http://localhost:3000');
+    expect(appBaseUrl('dmptool.org', 'production')).toBe('https://dmptool.org');
+  });
+
+  it('sets the protocol from the env, even when DOMAIN includes one', () => {
+    expect(appBaseUrl('http://dmptool.org', 'production')).toBe('https://dmptool.org');
+    expect(appBaseUrl('http://dmptool.org', 'stage')).toBe('https://dmptool.org');
+    expect(appBaseUrl('https://localhost:3000', 'development')).toBe('http://localhost:3000');
+  });
+
+  it('drops a trailing slash', () => {
+    expect(appBaseUrl('https://dmptool.org/', 'production')).toBe('https://dmptool.org');
+  });
+
+  it('rejects a malformed DOMAIN', () => {
+    expect(() => appBaseUrl('', 'production')).toThrow('DOMAIN must be a valid host or URL');
+    expect(() => appBaseUrl('not a host', 'production')).toThrow('DOMAIN must be a valid host or URL');
+    expect(() => appBaseUrl('https://', 'production')).toThrow('DOMAIN must be a valid host or URL');
+  });
+
+  it('rejects a DOMAIN with a path, query string or fragment', () => {
+    const message = 'DOMAIN must be a host (and optional port) without a path, query string or fragment';
+    expect(() => appBaseUrl('https://dmptool.org/app', 'production')).toThrow(message);
+    expect(() => appBaseUrl('dmptool.org?x=1', 'production')).toThrow(message);
+    expect(() => appBaseUrl('dmptool.org#top', 'production')).toThrow(message);
+  });
 });
 
 describe('loadConfig', () => {
@@ -80,6 +111,19 @@ describe('loadConfig', () => {
     expect(config.tokens).toMatchObject({
       validAudiences: ['my-ui', 'my-api'],
     });
+  });
+
+  it('builds the base URL from DOMAIN, defaulting to localhost', async () => {
+    process.env.DOMAIN = 'localhost:3000/';
+    await expect(loadConfig(logger)).resolves.toMatchObject({ env: 'test', domain: 'http://localhost:3000' });
+
+    delete process.env.DOMAIN;
+    await expect(loadConfig(logger)).resolves.toMatchObject({ domain: 'http://localhost' });
+  });
+
+  it('fails to load when DOMAIN is malformed', async () => {
+    process.env.DOMAIN = 'not a host';
+    await expect(loadConfig(logger)).rejects.toThrow('DOMAIN must be a valid host or URL');
   });
 
   it('uses the local issuer fallback when ISSUER is not configured', async () => {

@@ -120,6 +120,30 @@ const requiredUrl = (name: string, fallback?: string): string => {
 };
 
 /**
+ * Builds the base URL of the UI from DOMAIN. A protocol is added when DOMAIN doesn't have one, and the
+ * protocol is then set from the env (http in development and test, https everywhere else).
+ *
+ * @param domain the DOMAIN value, with or without a protocol (e.g. `localhost:3000` or `https://dmptool.org`)
+ * @param env the NODE_ENV the app is running in
+ * @returns the base URL (protocol, host and port) without a trailing slash
+ * @throws if DOMAIN is not a valid host, or if it includes a path, query string or fragment
+ */
+export const appBaseUrl = (domain: string, env: string): string => {
+  const withProtocol: string = /^https?:\/\//i.test(domain) ? domain : `https://${domain}`;
+  let url: URL;
+  try {
+    url = new URL(withProtocol);
+  } catch (error) {
+    throw new Error(`DOMAIN must be a valid host or URL: ${toErrorMessage(error)}`, { cause: error });
+  }
+  if (!url.hostname || url.pathname !== '/' || url.search || url.hash) {
+    throw new Error('DOMAIN must be a host (and optional port) without a path, query string or fragment');
+  }
+  url.protocol = ['development', 'test'].includes(env) ? 'http:' : 'https:';
+  return url.origin;
+};
+
+/**
  * Loads the configuration from environment variables.
  *
  * @returns the configuration object
@@ -162,6 +186,9 @@ export const loadConfig = async (logger: Logger): Promise<Config> => {
   const audienceUI: string = process.env.AUDIENCE_UI || 'my-ui';
   const audienceAPI: string = process.env.AUDIENCE_API || 'my-api';
 
+  const nodeEnv: string = process.env.NODE_ENV ?? 'development';
+  const domain: string = appBaseUrl(process.env.DOMAIN ?? 'localhost', nodeEnv);
+
   const cookieSecure = process.env.COOKIE_SECURE === 'true';
   if (process.env.NODE_ENV === 'production') {
     if (new URL(issuer).protocol !== 'https:') {
@@ -173,11 +200,11 @@ export const loadConfig = async (logger: Logger): Promise<Config> => {
   }
 
   return {
-    env: process.env.NODE_ENV ?? 'development',
+    env: nodeEnv,
     logger,
     port: Number.parseInt(process.env.PORT ?? '3000', 10),
 
-    domain: process.env.DOMAIN ?? 'localhost',
+    domain,
     applicationName: process.env.APPLICATION_NAME ?? 'my app',
     helpDeskAddress: process.env.HELP_DESK_ADDRESS ?? 'help@example.com',
     helpPageUrl: process.env.HELP_HOST ?? 'localhost',
