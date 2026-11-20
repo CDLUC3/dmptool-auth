@@ -123,10 +123,17 @@ describe('email service', () => {
       html: expect.stringContaining('href="https://app.example.test/email/confirm-email/abc_123-XYZ"'),
     }));
     const html = sendMail.mock.calls[0]?.[0]?.html ?? '';
-    expect(html).toContain('This link expires in 24 hours and can only be used once.');
-    expect(html).toContain('To confirm that this is your email address, open the link below.</p>');
+    expect(html).toContain('We received a request to add alias@example.test as an email address on a DMP Tool account.');
+    expect(html).toContain('>Confirm this email address</a>');
+    expect(html).toContain('This link works once and expires in 24 hours.');
+    expect(html).toContain('If it expires, you can send a new one from your DMP Tool profile page.');
     // An unconfirmed alias can't be used to sign in yet, so the email says which address to sign in with
-    expect(html).toContain("If you're asked to sign in, use the email address you normally sign in with, not this one.");
+    expect(html).toContain(
+      'use the email address you currently sign in with, not alias@example.test. Then select "Confirm."',
+    );
+    expect(html).toContain("This address won't be added to any account unless the link is used to confirm it.");
+    expect(html).toContain('<a href="mailto:help@example.test">help@example.test</a>');
+    expect(html).toContain('<a href="https://app.example.test/help">Help Page</a>');
   });
 
   it('should escape the email address and token in the email confirmation email', async () => {
@@ -141,10 +148,13 @@ describe('email service', () => {
     );
 
     const html = sendMail.mock.calls[0]?.[0]?.html ?? '';
-    expect(html).toContain('&quot;&lt;b&gt;x&lt;/b&gt;&quot;@example.test');
+    const escaped = '&quot;&lt;b&gt;x&lt;/b&gt;&quot;@example.test';
+    // The address appears in both the intro and the sign-in paragraphs, and must be escaped in each
+    expect(html).toContain(`We received a request to add ${escaped} as an email address`);
+    expect(html).toContain(`not ${escaped}. Then select "Confirm."`);
     expect(html).not.toContain('<b>x</b>');
     expect(html).toContain('/email/confirm-email/a%2Fb%3Fc');
-    expect(html).toContain('This link expires in 1 hour and can only be used once.');
+    expect(html).toContain('This link works once and expires in 1 hour.');
   });
 
   it('should add a protocol to the confirmation link only when DOMAIN does not include one', async () => {

@@ -223,14 +223,14 @@ export const sendEmailConfirmationEmail = async (
 
   const message = `
 <p>Hello,</p>
-<p>${escapeHtml(email)} was added to a DMP Tool account. To confirm that this is your email address, open the link below.</p>
-<p><a href="${confirmUrl}">Confirm my email address</a></p>
-<p>If you're asked to sign in, use the email address you normally sign in with, not this one.</p>
-<p>This link expires in ${hours} ${hours === 1 ? 'hour' : 'hours'} and can only be used once.</p>
-<p>If you didn't add this email address, you can ignore this email. It won't be confirmed unless you open the link above.</p>
+<p>We received a request to add ${escapeHtml(email)} as an email address on a DMP Tool account. If this was you, please confirm it:</p>
+<p><a href="${confirmUrl}">Confirm this email address</a></p>
+<p>If DMP Tool asks you to sign in first, use the email address you currently sign in with, not ${escapeHtml(email)}. Then select "Confirm."</p>
+<p>This link works once and expires in ${hours} ${hours === 1 ? 'hour' : 'hours'}. If it expires, you can send a new one from your DMP Tool profile page.</p>
+<p>If you didn't make this request, you can ignore this email. This address won't be added to any account unless the link is used to confirm it.</p>
 <p>All the best,<br>The DMP Tool team</p>
-<p><small>Please do not reply to this email. If you have any questions or need help, please contact us at
-<a href="mailto:${config.helpDeskAddress}">${config.helpDeskAddress}</a> or visit the <a href="${config.helpPageUrl}">Help Page</a>.</small></p>
+<p><small>Please don't reply to this email. For questions or help, contact us at
+<a href="mailto:${config.helpDeskAddress}">${config.helpDeskAddress}</a> or visit our <a href="${config.helpPageUrl}">Help Page</a>.</small></p>
 `;
 
   return await sendEmail(
